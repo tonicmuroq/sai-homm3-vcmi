@@ -14,6 +14,9 @@ set(MMAI_FILES
   BAI/fallback/scripted_model.h
   BAI/fallback/scripted_model.cpp
 
+  BAI/sai/sai_model.h
+  BAI/sai/sai_model.cpp
+
   BAI/v13/BAI.cpp
   BAI/v13/BAI.h
   BAI/v13/nn_model.h

@@ -20,6 +20,7 @@
 
 #include "BAI/factory.h"
 #include "BAI/fallback/scripted_model.h"
+#include "BAI/sai/sai_model.h"
 #include "BAI/router.h"
 
 #include "common.h"
@@ -83,6 +84,15 @@ namespace
 
 	Schema::IModel * GetModel(const std::string & key)
 	{
+		// Drives every battle from Sai, bypassing the repository so no MMAI mod
+		// (and no .onnx file) has to be present.
+		if(std::getenv("VCMI_SAI"))
+		{
+			static const auto saiModel = std::make_shared<SaiModel>();
+			logAi->debug("MMAI: VCMI_SAI is set, using SaiModel for %s", key);
+			return saiModel.get();
+		}
+
 		const auto * repo = GetModelRepository();
 		auto lock = std::lock_guard<std::mutex>(repo->mutex);
 
