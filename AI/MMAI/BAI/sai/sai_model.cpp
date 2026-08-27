@@ -14,6 +14,7 @@
 #include "schema/v13/constants.h"
 #include "schema/v13/types.h"
 
+#include "sai_bridge.h"
 #include "sai_model.h"
 
 namespace MMAI::BAI
@@ -72,6 +73,86 @@ namespace
 
 		return std::any_cast<const ISupplementaryData *>(any);
 	}
+
+	// The render is meant for a terminal; the colour escapes are noise to a reader.
+	std::string StripAnsi(const std::string & text)
+	{
+		auto out = std::string();
+		out.reserve(text.size());
+
+		for(size_t i = 0; i < text.size(); ++i)
+		{
+			if(text[i] != '\x1b')
+			{
+				out.push_back(text[i]);
+				continue;
+			}
+			while(i < text.size() && text[i] != 'm')
+				++i;
+		}
+
+		return out;
+	}
+
+	std::string JsonEscape(const std::string & text)
+	{
+		auto out = std::string();
+		out.reserve(text.size() + 16);
+
+		for(unsigned char c : text)
+		{
+			switch(c)
+			{
+				case '"': out += "\\\""; break;
+				case '\\': out += "\\\\"; break;
+				case '\n': out += "\\n"; break;
+				case '\r': out += "\\r"; break;
+				case '\t': out += "\\t"; break;
+				default:
+					if(c < 0x20)
+						out += boost::str(boost::format("\\u%04x") % static_cast<int>(c));
+					else
+						out.push_back(static_cast<char>(c));
+			}
+		}
+
+		return out;
+	}
+
+	std::string SideName(Schema::Side side)
+	{
+		switch(side)
+		{
+			case Schema::Side::LEFT: return "left";
+			case Schema::Side::RIGHT: return "right";
+			default: return "both";
+		}
+	}
+
+	std::string BuildPayload(const ISupplementaryData * sup, const std::vector<int> & legal)
+	{
+		auto out = std::string("{");
+		out += R"("color":")" + JsonEscape(sup->getColor()) + R"(",)";
+		out += R"("side":")" + SideName(sup->getSide()) + R"(",)";
+		out += R"("render":")" + JsonEscape(StripAnsi(sup->getAnsiRender())) + R"(",)";
+		out += R"("legal":[)";
+
+		for(size_t i = 0; i < legal.size(); ++i)
+		{
+			if(i > 0)
+				out += ",";
+			out += R"({"action":)" + std::to_string(legal[i]) + R"(,"desc":")" + JsonEscape(DescribeAction(legal[i])) + R"("})";
+		}
+
+		out += "]}";
+		return out;
+	}
+
+	bool BridgeEnabled()
+	{
+		const char * addr = std::getenv("VCMI_SAI_ADDR");
+		return addr != nullptr && *addr != '\0';
+	}
 }
 
 Schema::ModelType SaiModel::getType()
@@ -114,6 +195,13 @@ int SaiModel::getAction(const Schema::IState * s)
 	for(auto i = 0; i < static_cast<int>(mask->size()); ++i)
 		if(mask->at(i))
 			legal.push_back(i);
+
+	if(BridgeEnabled())
+	{
+		auto action = SaiBridge::instance().decide(BuildPayload(sup, legal), *mask);
+		logAi->info("SaiModel: Sai chose %d, %s", action, DescribeAction(action));
+		return action;
+	}
 
 	auto listed = std::string();
 	for(auto action : legal)
