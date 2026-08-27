@@ -1,0 +1,285 @@
+name: SAI Windows Build
+on:
+  workflow_dispatch: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Build Windows x64
+    strategy:
+      matrix:
+        include:
+        - platform: msvc-x64
+          arch: x64
+          toolset: '14.29'
+          os: windows-2025-vs2026
+          pack: 1
+          upload: 0
+          pack_type: RelWithDebInfo
+          extension: zip
+          preset: windows-msvc-ninja-release
+          conan_profile: msvc-x64
+          conan_prebuilts: dependencies-windows-x64
+          conan_options: -s "&:build_type=RelWithDebInfo" -o "&:target_pre_windows10=True"
+          artifact_platform: x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+    - name: Prepare APT staging dir
+      if: contains(matrix.os, 'ubuntu')
+      run: mkdir -p "$RUNNER_TEMP/apt-cache"
+    - name: APT cache restore
+      if: contains(matrix.os, 'ubuntu')
+      id: aptcache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/apt-cache
+        key: ${{ matrix.platform }}-apt-${{ matrix.os }}
+        restore-keys: '${{ matrix.platform }}-apt-${{ matrix.os }}
+
+          '
+    - name: Prepare CI
+      if: ${{ matrix.before_install != '' }}
+      run: source '${{ github.workspace }}/CI/before_install/${{ matrix.before_install }}'
+    - name: Configure codesigning for macOS
+      if: ${{ startsWith(matrix.platform, 'mac-') && matrix.pack == 1 }}
+      env:
+        KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        SIGNING_CERTIFICATE_BASE64: ${{ secrets.MACOS_SIGNING_CERTIFICATE_BASE64 }}
+        SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+      run: "if [[ -z \"$KEYCHAIN_PASSWORD\" || -z \"$SIGNING_CERTIFICATE_BASE64\" || -z \"$SIGNING_CERTIFICATE_PASSWORD\" ]]; then\n  echo \"skip codesigning\"\n  exit 0\nfi\n\nkeychainName=build.keychain\nsecurity create-keychain -p \"$KEYCHAIN_PASSWORD\" \"$keychainName\"\nsecurity default-keychain -s \"$keychainName\"\nsecurity unlock-keychain -p \"$KEYCHAIN_PASSWORD\" \"$keychainName\"\nsecurity set-keychain-settings -u -t 7200 \"$keychainName\"\n\ncertPath=\"$RUNNER_TEMP/cert.p12\"\nprintf \"$SIGNING_CERTIFICATE_BASE64\" | base64 -D -o \"$certPath\"\n\nsecurity import \"$certPath\" -f pkcs12 -P \"$SIGNING_CERTIFICATE_PASSWORD\" -T \"$(which codesign)\" -k \"$keychainName\"\nsecurity set-key-partition-list -S apple-tool:,apple: -s -k \"$KEYCHAIN_PASSWORD\" \"$keychainName\" >/dev/null\n\n# fetch SHA-1 of the p12 cert. Sample output for awk processing:\n# SHA1 Fingerprint=00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33\nsigningIdentitySHA=$(openssl pkcs12 -in \"$certPath\" -nodes -passin \"pass:$SIGNING_CERTIFICATE_PASSWORD\" -legacy 2>/dev/null \\\n  | openssl x509 -noout -fingerprint -sha1 \\\n  | awk -F = '{ gsub(/:/, \"\", $2); print $2 }')\necho MACOS_CODE_SIGN_IDENTITY=$signingIdentitySHA >> $GITHUB_ENV\n"
+    - name: APT cache save
+      if: contains(matrix.os, 'ubuntu') && steps.aptcache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/apt-cache
+        key: ${{ steps.aptcache.outputs.cache-primary-key }}
+    - name: Detect Visual Studio version (Windows)
+      if: ${{ startsWith(matrix.platform, 'msvc') }}
+      shell: pwsh
+      run: '$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+        $vsInstallationVersion = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationVersion
+
+        $vsMajor = ($vsInstallationVersion -split ''\.'')[0]
+
+        echo "MSBUILD_VS_VERSION=$vsMajor" >> $env:GITHUB_ENV
+
+        '
+    - name: Install MSVC v142 toolset (Windows non-ARM)
+      if: ${{ startsWith(matrix.platform, 'msvc') && matrix.arch != 'arm64' }}
+      shell: pwsh
+      run: '$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+        $installPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+
+
+        $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+
+        & $installer modify --installPath "$installPath" --add Microsoft.VisualStudio.Component.VC.v142.x86.x64 --quiet --norestart
+
+        '
+    - name: Install Conan Dependencies
+      if: ${{ matrix.conan_prebuilts != '' }}
+      run: 'pipx install conan
+
+        source ''${{github.workspace}}/CI/install_conan_dependencies.sh'' ''${{matrix.conan_prebuilts}}''
+
+        '
+    - name: Setup MSVC Developer Command Prompt
+      if: ${{ startsWith(matrix.platform, 'msvc') }}
+      uses: step-security/msvc-dev-cmd@main
+      with:
+        arch: ${{ matrix.arch }}
+        toolset: ${{ matrix.toolset }}
+    - name: Setup compiler cache for PRs
+      uses: step-security/ccache-action@v1
+      if: ${{ github.event.number != '' }}
+      with:
+        variant: ${{ startsWith(matrix.platform, 'msvc') && 'sccache' || 'ccache' }}
+        key: ${{ matrix.platform }}-PR-${{ github.event.number }}
+        restore-keys: '${{ matrix.platform }}-PR-${{ github.event.number }}
+
+          ${{ matrix.platform }}-branch-${{ github.base_ref }}
+
+          ${{ matrix.platform }}-
+
+          '
+        create-symlink: ${{ !startsWith(matrix.platform, 'msvc') }}
+        max-size: 5G
+        verbose: 2
+        job-summary: ''
+    - name: Setup compiler cache for branch builds
+      uses: step-security/ccache-action@v1
+      if: ${{ github.event.number == '' }}
+      with:
+        variant: ${{ startsWith(matrix.platform, 'msvc') && 'sccache' || 'ccache' }}
+        key: ${{ matrix.platform }}-branch-${{ github.ref_name }}
+        restore-keys: '${{ matrix.platform }}-branch-${{ github.ref_name }}
+
+          ${{ matrix.platform }}-
+
+          '
+        create-symlink: ${{ !startsWith(matrix.platform, 'msvc') }}
+        max-size: 5G
+        verbose: 2
+        job-summary: ''
+    - name: CCache tuning (Android)
+      if: ${{ startsWith(matrix.platform, 'android') }}
+      run: 'echo "/usr/lib/ccache" >> $GITHUB_PATH
+
+        ccache --set-config=compiler_check=content
+
+        ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
+
+        ccache --set-config=hash_dir=true
+
+        ccache --set-config=sloppiness=time_macros
+
+        '
+    - name: Install Conan profile
+      if: ${{ matrix.conan_profile != '' }}
+      run: "conan profile detect\noutFolder=conan-generated\nconan install . \\\n  --output-folder=\"$outFolder\" \\\n  --build=never \\\n  --profile=dependencies/conan_profiles/${{ matrix.conan_profile }} \\\n  --conf=\"tools.cmake.cmaketoolchain:generator=Ninja\" \\\n  ${{ matrix.conan_options }} \\\n  ${{ startsWith(matrix.platform, 'msvc') && '--conf=\"tools.microsoft.msbuild:vs_version=${MSBUILD_VS_VERSION}\"' || '' }}\n"
+    - name: Add Conan runtime dependencies to PATH (MSVC)
+      if: ${{ startsWith(matrix.platform, 'msvc') }}
+      run: sed 's#/[^/]*$##' conan-generated/_runtime_libs.txt | sort -u >> "$GITHUB_PATH"
+    - name: Configure enableUncompressedNativeLibs
+      if: ${{ startsWith(matrix.platform, 'android') }}
+      run: mkdir -p ~/.gradle && echo "android.bundle.enableUncompressedNativeLibs=true" > ~/.gradle/gradle.properties
+    - name: Install Java
+      uses: actions/setup-java@v5
+      if: ${{ startsWith(matrix.platform, 'android') }}
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Free up disk space
+      if: contains(matrix.os, 'ubuntu')
+      run: 'echo "Disk usage BEFORE cleanup:"
+
+        df -h
+
+        sudo rm -rf /opt/ghc /usr/local/.ghcup /usr/share/dotnet || :
+
+        echo "Disk usage AFTER cleanup:"
+
+        df -h
+
+        '
+    - name: Bump Android x64 build ID
+      if: ${{ matrix.platform == 'android-64' }}
+      run: perl -i -pe 's/versionCode (\d+)/$x=$1+1; "versionCode $x"/e' android/vcmi-app/build.gradle
+    - name: Bump Android x86_64 build ID
+      if: ${{ matrix.platform == 'android-64-intel' }}
+      run: perl -i -pe 's/versionCode (\d+)/$x=$1+2; "versionCode $x"/e' android/vcmi-app/build.gradle
+    - name: Build Number
+      run: "source '${{github.workspace}}/CI/get_package_name.sh'\nif [ '${{ matrix.artifact_platform }}' ]; then\n  VCMI_PACKAGE_FILE_NAME+=\"-${{ matrix.artifact_platform }}\"\nfi\necho VCMI_PACKAGE_FILE_NAME=\"$VCMI_PACKAGE_FILE_NAME\" >> $GITHUB_ENV\necho VCMI_PACKAGE_BUILD=\"$VCMI_PACKAGE_BUILD\" >> $GITHUB_ENV\necho VCMI_PACKAGE_NAME_SUFFIX=\"$VCMI_PACKAGE_NAME_SUFFIX\" >> $GITHUB_ENV\necho VCMI_PACKAGE_GOLDMASTER=\"$VCMI_PACKAGE_GOLDMASTER\" >> $GITHUB_ENV\n"
+      env:
+        PULL_REQUEST: ${{ github.event.pull_request.number }}
+    - name: Configure (non-MSVC)
+      if: ${{ !startsWith(matrix.platform, 'msvc') }}
+      run: "if [[ (\"${{ matrix.preset }}\" == \"android-conan-ninja-release\") && (\"${{ github.ref }}\" != 'refs/heads/master') ]]; then\n  # key1=value1;key2=value2;...\n  gradleProperties=$(python3 CI/android/gradle_daily_props.py)\n  androidOptions=(\"-DANDROID_GRADLE_PROPERTIES=$gradleProperties\")\n  androidOptions+=(\"-DCMAKE_C_COMPILER_LAUNCHER=ccache\" \"-DCMAKE_CXX_COMPILER_LAUNCHER=ccache\")\nfi\ncmake -DENABLE_CCACHE:BOOL=ON \"${androidOptions[@]}\" --preset ${{ matrix.preset }}\n"
+    - name: Configure (MSVC)
+      if: ${{ startsWith(matrix.platform, 'msvc') }}
+      run: cmake --preset ${{ matrix.preset }}
+    - name: Build
+      run: cmake --build --preset ${{matrix.preset}}
+      env:
+        ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    - name: Create AppImage
+      if: ${{ matrix.platform == 'linux-appimage-x64' || matrix.platform == 'linux-appimage-arm64' }}
+      env:
+        BUILD_DIR: ${{ github.workspace }}/out/build/${{ matrix.preset }}
+        ARCH: ${{ matrix.artifact_platform }}
+      run: 'chmod +x CI/create_appimage.sh
+
+        CI/create_appimage.sh --use-conan
+
+        '
+    - name: Kill XProtect to work around CPack issue on macOS
+      if: ${{ startsWith(matrix.platform, 'mac') && matrix.pack == 1 }}
+      run: '# Cf. https://github.com/actions/runner-images/issues/7522#issuecomment-1556766641
+
+        echo Killing...; sudo pkill -9 XProtect >/dev/null || true;
+
+        echo "Waiting..."; counter=0; while pgrep XProtect && ((counter < 20)); do sleep 3; ((counter++)); done
+
+        pgrep XProtect || true
+
+        '
+    - name: Pack
+      id: cpack
+      if: ${{ matrix.pack == 1 }}
+      run: "cd \"${{github.workspace}}/out/build/${{matrix.preset}}\"\n# macOS may fail due to hdiutil error, see https://github.com/actions/runner-images/issues/7522\nmaxCounter=${{ startsWith(matrix.platform, 'mac-') && '10' || '0' }}\ncounter=1\nuntil cpack -C ${{matrix.pack_type}} || ((counter > $maxCounter)); do\n  sleep 3; ((counter++))\ndone\n"
+    - name: Notarize macOS dmg
+      if: ${{ startsWith(matrix.platform, 'mac-') && matrix.pack == 1 }}
+      env:
+        NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
+        NOTARIZATION_APPLE_ID_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID_PASSWORD }}
+        NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
+      run: "if [[ -z \"$NOTARIZATION_APPLE_ID\" || -z \"$NOTARIZATION_APPLE_ID_PASSWORD\" || -z \"$NOTARIZATION_TEAM_ID\" ]]; then\n  echo \"skip notarization\"\n  exit 0\nfi\n\ndmg='${{ github.workspace }}/out/build/${{ matrix.preset }}/${{ env.VCMI_PACKAGE_FILE_NAME }}.${{ matrix.extension }}'\ncodesign --verbose=4 --force --sign \"$MACOS_CODE_SIGN_IDENTITY\" \"$dmg\"\nxcrun notarytool submit \\\n  --apple-id \"$NOTARIZATION_APPLE_ID\" \\\n  --password \"$NOTARIZATION_APPLE_ID_PASSWORD\" \\\n  --team-id \"$NOTARIZATION_TEAM_ID\" \\\n  --wait \\\n  \"$dmg\"\nxcrun stapler staple \"$dmg\"\n"
+    - name: Find Android package
+      if: ${{ startsWith(matrix.platform, 'android') }}
+      run: 'OUTPUT_DIRECTORY="${{ github.workspace }}/out/build/${{ matrix.preset }}/android-build/vcmi-app/build/outputs"
+
+        mv "$OUTPUT_DIRECTORY/apk/release/vcmi-release.apk" "${{github.workspace}}/out/build/${{matrix.preset}}/${{ env.VCMI_PACKAGE_FILE_NAME }}.apk"
+
+        mv "$OUTPUT_DIRECTORY/bundle/release/vcmi-release.aab" "${{github.workspace}}/out/build/${{matrix.preset}}/${{ env.VCMI_PACKAGE_FILE_NAME }}.aab"
+
+        '
+    - name: Upload Artifact
+      id: upload_artifact
+      uses: actions/upload-artifact@v7
+      with:
+        archive: false
+        path: '${{github.workspace}}/out/build/${{matrix.preset}}/${{ env.VCMI_PACKAGE_FILE_NAME }}.${{ matrix.extension }}
+
+          '
+    - name: Upload AAB Artifact
+      id: upload_aab
+      if: ${{ startsWith(matrix.platform, 'android') }}
+      uses: actions/upload-artifact@v7
+      with:
+        archive: false
+        path: '${{github.workspace}}/out/build/${{matrix.preset}}/${{ env.VCMI_PACKAGE_FILE_NAME }}.aab
+
+          '
+    - name: Upload MSVC debug symbols
+      id: upload_symbols
+      if: ${{ startsWith(matrix.platform, 'msvc') }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.VCMI_PACKAGE_FILE_NAME }}-${{ matrix.platform }}-symbols
+        compression-level: 9
+        path: '${{github.workspace}}/**/*.pdb
+
+          '
+    - name: Create iOS AppStore debug symbols
+      if: ${{ matrix.platform == 'ios' }}
+      run: 'IOS_APPSTORE_SYMBOLS_DIR=''${{ github.workspace }}/Symbols''
+
+        mkdir "$IOS_APPSTORE_SYMBOLS_DIR"
+
+        dsyms=$(find ''${{ github.workspace }}/out/build/${{ matrix.preset }}'' -name ''*.dSYM'')
+
+        xcrun symbols -arch all -symbolsPackageDir "$IOS_APPSTORE_SYMBOLS_DIR" $dsyms
+
+        echo IOS_APPSTORE_SYMBOLS_DIR="$IOS_APPSTORE_SYMBOLS_DIR" >> $GITHUB_ENV
+
+        '
+    - name: Upload iOS AppStore debug symbols
+      if: ${{ matrix.platform == 'ios' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.VCMI_PACKAGE_FILE_NAME }}-${{ matrix.platform }}-symbols
+        compression-level: 9
+        path: '${{ env.IOS_APPSTORE_SYMBOLS_DIR }}
+
+          '
