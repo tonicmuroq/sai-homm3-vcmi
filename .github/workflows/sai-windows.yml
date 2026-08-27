@@ -1,6 +1,9 @@
 name: SAI Windows Build
 on:
-  workflow_dispatch: null
+  workflow_dispatch:
+  push:
+    branches:
+      - sai
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
