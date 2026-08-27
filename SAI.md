@@ -46,19 +46,28 @@ A decision runs `getAction` **twice**. The first call returns `ACTION_RENDER_ANS
 | `GET /health` | `{"ok":true}` |
 | `GET /state` | the pending decision, or `{"pending":false}` |
 | `POST /action` | body is the action number; `{"ok":true}`, or 400 with a reason |
+| `POST /cast` | body is an index into `casts`; casting ends the turn |
 
-`/state` returns the battlefield render with ANSI escapes stripped, plus every legal action already decoded:
+`/state` returns the battlefield render with ANSI escapes stripped, every legal action already decoded, and every legal hero spellcast:
 
 ```json
-{"color":"blue","side":"left","render":"...","legal":[{"action":1,"desc":"WAIT"},
- {"action":28,"desc":"MOVE hex=1 y=0 x=1"}]}
+{"color":"blue","side":"left","mana":10,"render":"...",
+ "legal":[{"action":1,"desc":"WAIT"},{"action":28,"desc":"MOVE hex=1 y=0 x=1"}],
+ "casts":[{"idx":0,"spell":"Magic Arrow","mana":5,"hex":[44]}]}
 ```
+
+`legal` and `casts` are offered **together**, in one round trip, so the agent can weigh casting against moving — that comparison is the whole point of owning spells. Answering with `/action` at such a decision simply means "no spell this turn".
+
+`casts` is addressed by index because `spells::Target` holds a raw `Unit *` and cannot be rebuilt from JSON; the engine-side list stays server-side. It is enumerated the same way BattleAI does it (`CSpell::canBeCast` then `SpellTargetEvaluator::getViableTargets`), so mana, per-turn limits and immunities are already accounted for — an offered cast will go through.
+
+With no agent attached, or with `battle.enableAutocombatSpells` off, spell choice reverts to BattleAI's heuristic.
 
 `POST /action` rejects anything outside the engine's own legal mask, and the caller keeps the turn — so a refusal can be answered with a different action rather than costing the battle.
 
 Two properties worth knowing before building on it:
 
 - **One decision at a time.** Two battles can run in parallel on separate threads (attacker and defender are separate `Router` instances), but Sai can only answer one, so a second caller queues on a turnstile rather than overwriting the slot.
+- **After 100 decisions in one battle the rest of it is played by BattleAI** (`BAI.cpp:310`). A skirmish never reaches that; a large field battle will.
 - **A timeout throws rather than wedges.** `VCMI_SAI_TIMEOUT` (default 300s) bounds the wait; on expiry `getAction` throws, and `BAI::activeStack` catches it and plays that turn with BattleAI. So a dead or absent agent degrades the play instead of freezing the game.
 
 `VCMI_SAI_ADDR` defaults to `127.0.0.1:18080` when the bridge is enabled.

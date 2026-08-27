@@ -16,51 +16,14 @@
 
 #include "sai_bridge.h"
 #include "sai_model.h"
+#include "sai_payload.h"
 
 namespace MMAI::BAI
 {
 using ISupplementaryData = Schema::V13::ISupplementaryData;
-using HexAction = Schema::V13::HexAction;
 
 namespace
 {
-	// Hexes is array<array<IHex*, 15>, 11> => hex id 0..164 is row-major over 15 columns.
-	constexpr int HEXES_PER_ROW = 15;
-
-	constexpr std::array<const char *, EI(HexAction::_count)> HEX_ACTION_NAMES{
-		"AMOVE_TR",
-		"AMOVE_R",
-		"AMOVE_BR",
-		"AMOVE_BL",
-		"AMOVE_L",
-		"AMOVE_TL",
-		"AMOVE_2TR",
-		"AMOVE_2R",
-		"AMOVE_2BR",
-		"AMOVE_2BL",
-		"AMOVE_2L",
-		"AMOVE_2TL",
-		"MOVE",
-		"SHOOT",
-	};
-
-	std::string DescribeAction(int action)
-	{
-		if(action == Schema::V13::ACTION_RETREAT)
-			return "RETREAT";
-		if(action == Schema::V13::ACTION_WAIT)
-			return "WAIT";
-
-		auto i = action - Schema::V13::N_NONHEX_ACTIONS;
-		auto hex = i / Schema::V13::N_HEX_ACTIONS;
-		auto hexaction = i % Schema::V13::N_HEX_ACTIONS;
-
-		return boost::str(
-			boost::format("%s hex=%d y=%d x=%d") % HEX_ACTION_NAMES.at(hexaction) % hex % (hex / HEXES_PER_ROW)
-			% (hex % HEXES_PER_ROW)
-		);
-	}
-
 	const ISupplementaryData * ExtractSupplementaryData(const Schema::IState * s)
 	{
 		auto any = s->getSupplementaryData();
@@ -74,51 +37,6 @@ namespace
 		return std::any_cast<const ISupplementaryData *>(any);
 	}
 
-	// The render is meant for a terminal; the colour escapes are noise to a reader.
-	std::string StripAnsi(const std::string & text)
-	{
-		auto out = std::string();
-		out.reserve(text.size());
-
-		for(size_t i = 0; i < text.size(); ++i)
-		{
-			if(text[i] != '\x1b')
-			{
-				out.push_back(text[i]);
-				continue;
-			}
-			while(i < text.size() && text[i] != 'm')
-				++i;
-		}
-
-		return out;
-	}
-
-	std::string JsonEscape(const std::string & text)
-	{
-		auto out = std::string();
-		out.reserve(text.size() + 16);
-
-		for(unsigned char c : text)
-		{
-			switch(c)
-			{
-				case '"': out += "\\\""; break;
-				case '\\': out += "\\\\"; break;
-				case '\n': out += "\\n"; break;
-				case '\r': out += "\\r"; break;
-				case '\t': out += "\\t"; break;
-				default:
-					if(c < 0x20)
-						out += boost::str(boost::format("\\u%04x") % static_cast<int>(c));
-					else
-						out.push_back(static_cast<char>(c));
-			}
-		}
-
-		return out;
-	}
-
 	std::string SideName(Schema::Side side)
 	{
 		switch(side)
@@ -128,31 +46,12 @@ namespace
 			default: return "both";
 		}
 	}
+}
 
-	std::string BuildPayload(const ISupplementaryData * sup, const std::vector<int> & legal)
-	{
-		auto out = std::string("{");
-		out += R"("color":")" + JsonEscape(sup->getColor()) + R"(",)";
-		out += R"("side":")" + SideName(sup->getSide()) + R"(",)";
-		out += R"("render":")" + JsonEscape(StripAnsi(sup->getAnsiRender())) + R"(",)";
-		out += R"("legal":[)";
-
-		for(size_t i = 0; i < legal.size(); ++i)
-		{
-			if(i > 0)
-				out += ",";
-			out += R"({"action":)" + std::to_string(legal[i]) + R"(,"desc":")" + JsonEscape(DescribeAction(legal[i])) + R"("})";
-		}
-
-		out += "]}";
-		return out;
-	}
-
-	bool BridgeEnabled()
-	{
-		const char * addr = std::getenv("VCMI_SAI_ADDR");
-		return addr != nullptr && *addr != '\0';
-	}
+bool SaiBridgeEnabled()
+{
+	const char * addr = std::getenv("VCMI_SAI_ADDR");
+	return addr != nullptr && *addr != '\0';
 }
 
 Schema::ModelType SaiModel::getType()
@@ -196,11 +95,14 @@ int SaiModel::getAction(const Schema::IState * s)
 		if(mask->at(i))
 			legal.push_back(i);
 
-	if(BridgeEnabled())
+	if(SaiBridgeEnabled())
 	{
-		auto action = SaiBridge::instance().decide(BuildPayload(sup, legal), *mask);
-		logAi->info("SaiModel: Sai chose %d, %s", action, DescribeAction(action));
-		return action;
+		// Reached only when BAI re-asks after rejecting an action: the decision that
+		// offered spells happened earlier, in BAI::maybeSaiDecide, so no casts here.
+		auto payload = BuildSaiPayload(sup->getColor(), SideName(sup->getSide()), sup->getAnsiRender(), legal, {}, 0);
+		auto decision = SaiBridge::instance().decide(std::move(payload), *mask, 0);
+		logAi->info("SaiModel: Sai chose %d, %s", decision.value, DescribeAction(decision.value));
+		return decision.value;
 	}
 
 	auto listed = std::string();

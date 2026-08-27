@@ -16,6 +16,8 @@ set(MMAI_FILES
 
   BAI/sai/sai_bridge.h
   BAI/sai/sai_bridge.cpp
+  BAI/sai/sai_payload.h
+  BAI/sai/sai_payload.cpp
   BAI/sai/sai_model.h
   BAI/sai/sai_model.cpp
 

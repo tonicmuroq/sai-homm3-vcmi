@@ -15,6 +15,15 @@
 #include "battle/CBattleInfoEssentials.h"
 #include "callback/CBattleCallback.h"
 
+#include "AI/BattleAI/SpellTargetsEvaluator.h"
+#include "GameLibrary.h"
+#include "mapObjects/CGHeroInstance.h"
+#include "spells/CSpellHandler.h"
+#include "spells/ISpellMechanics.h"
+
+#include "BAI/sai/sai_bridge.h"
+#include "BAI/sai/sai_model.h"
+#include "BAI/sai/sai_payload.h"
 #include "BAI/v13/BAI.h"
 #include "BAI/v13/action.h"
 #include "BAI/v13/hexaction.h"
@@ -142,8 +151,89 @@ void BAI::yourTacticPhase(const BattleID & bid, int distance)
 	cb->battleMakeTacticAction(bid, BattleAction::makeEndOFTacticPhase(battle->battleGetTacticsSide()));
 }
 
+bool BAI::maybeSaiDecide(const CStack * astack, const BattleID & bid)
+{
+	const auto * hero = battle->battleGetMyHero();
+	auto spells = std::vector<const CSpell *>();
+	auto targets = std::vector<spells::Target>();
+
+	if(enableSpellsUsage && hero && battle->battleCanCastSpell(hero, spells::Mode::HERO) == ESpellCastProblem::OK)
+	{
+		for(const auto & spell : LIBRARY->spellh->objects)
+		{
+			if(!spell->canBeCast(battle.get(), spells::Mode::HERO, hero))
+				continue;
+
+			// Same test as spellType() in BattleEvaluator.cpp, which is static there.
+			if(!spell->isCombat() || spell->isCreatureAbility())
+				continue;
+			if(!spell->isOffensive() && !spell->hasEffects() && !spell->hasBattleEffects())
+				continue;
+
+			auto probe = spells::BattleCast(battle.get(), hero, spells::Mode::HERO, spell.get());
+			for(auto & target : SpellTargetEvaluator::getViableTargets(spell->battleMechanics(&probe).get()))
+			{
+				spells.push_back(spell.get());
+				targets.push_back(std::move(target));
+			}
+		}
+	}
+
+	auto offered = std::vector<SaiCastInfo>();
+	offered.reserve(spells.size());
+	for(size_t i = 0; i < spells.size(); ++i)
+	{
+		auto info = SaiCastInfo{spells[i]->getNameTranslated(), battle->battleGetSpellCost(spells[i], hero), {}};
+		for(const auto & dest : targets[i])
+			if(dest.hexValue.isValid())
+				info.hexes.push_back(dest.hexValue.toInt());
+		offered.push_back(std::move(info));
+	}
+
+	const auto * mask = state->getActionMask();
+	auto legal = std::vector<int>();
+	for(auto i = 0; i < static_cast<int>(mask->size()); ++i)
+		if(mask->at(i))
+			legal.push_back(i);
+
+	auto sideName = battle->battleGetMySide() == BattleSide::LEFT_SIDE ? "left" : "right";
+	auto payload = BuildSaiPayload(
+		cb->getPlayerID()->toString(),
+		sideName,
+		renderANSI(),
+		legal,
+		offered,
+		hero ? hero->mana : 0
+	);
+
+	auto decision = SaiBridge::instance().decide(std::move(payload), *mask, static_cast<int>(offered.size()));
+
+	if(!decision.isCast)
+	{
+		saiChosenAction = decision.value;
+		return false;
+	}
+
+	const auto & pick = targets.at(decision.value);
+	auto spellcast = BattleAction();
+	spellcast.actionType = EActionType::HERO_SPELL;
+	spellcast.spell = spells.at(decision.value)->id;
+	spellcast.setTarget(pick);
+	spellcast.side = battle->battleGetMySide();
+	spellcast.stackNumber = -1;
+
+	logger.info("Sai casts %s", spells.at(decision.value)->getNameTranslated());
+	cb->battleMakeSpellAction(bid, spellcast);
+	return true;
+}
+
 bool BAI::maybeCastSpell(const CStack * astack, const BattleID & bid)
 {
+	// The agent decides spell-or-move itself, and needs the choice offered even when
+	// there is nothing castable, so this runs ahead of the enableSpellsUsage gate.
+	if(SaiBridgeEnabled())
+		return maybeSaiDecide(astack, bid);
+
 	if(!enableSpellsUsage)
 		return false;
 
@@ -349,7 +439,16 @@ void BAI::_activeStack(const BattleID & bid, const CStack * astack)
 	while(true)
 	{
 		auto t0 = std::chrono::steady_clock::now();
-		auto a = getNonRenderAction();
+		Schema::Action a;
+		if(saiChosenAction.has_value())
+		{
+			a = *saiChosenAction;
+			saiChosenAction.reset();
+		}
+		else
+		{
+			a = getNonRenderAction();
+		}
 		auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
 		getActionTotalMs += dt;
 		getActionTotalCalls += 1;

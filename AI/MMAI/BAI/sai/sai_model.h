@@ -14,6 +14,8 @@
 
 namespace MMAI::BAI
 {
+bool SaiBridgeEnabled();
+
 class SaiModel : public MMAI::Schema::IModel
 {
 public:

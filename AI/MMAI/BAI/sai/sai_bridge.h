@@ -18,6 +18,12 @@
 
 namespace MMAI::BAI
 {
+struct SaiDecision
+{
+	bool isCast = false;
+	int value = 0; // action number, or index into the offered cast list
+};
+
 class SaiBridge
 {
 public:
@@ -26,9 +32,10 @@ public:
 	SaiBridge(const SaiBridge &) = delete;
 	SaiBridge & operator=(const SaiBridge &) = delete;
 
-	// Blocks until an action is posted to /action. Throws on timeout: BAI::activeStack
+	// Blocks until /action or /cast is posted. Throws on timeout: BAI::activeStack
 	// catches that and plays the turn with BattleAI, which beats wedging the battle.
-	int decide(std::string payload, const std::vector<bool> & mask);
+	// castCount bounds the accepted /cast index; 0 means no spells were offered.
+	SaiDecision decide(std::string payload, const std::vector<bool> & mask, int castCount);
 
 	std::string address() const;
 
@@ -48,7 +55,8 @@ private:
 
 	std::string pending;
 	const std::vector<bool> * pendingMask = nullptr;
-	int chosen = 0;
+	int pendingCasts = 0;
+	SaiDecision chosen;
 	bool hasChosen = false;
 
 	std::string bind;

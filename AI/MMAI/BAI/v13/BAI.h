@@ -77,6 +77,11 @@ public:
 	std::shared_ptr<BattleAction> buildBattleAction();
 	std::shared_ptr<BattleAction> maybeBuildAutoAction(const CStack * stack, const BattleID & bid) const;
 	bool maybeCastSpell(const CStack * stack, const BattleID & bid);
+	// Offers legal actions and legal casts in one round trip so the agent can weigh
+	// "cast vs. move". Returns true when it cast (turn is over); on a plain action it
+	// stores the choice in saiChosenAction and returns false to fall through.
+	bool maybeSaiDecide(const CStack * stack, const BattleID & bid);
+	std::optional<Schema::Action> saiChosenAction;
 	void _activeStack(const BattleID & bid, const CStack * stack);
 
 	std::optional<BattleAction> maybeFleeOrSurrender(const BattleID & bid);

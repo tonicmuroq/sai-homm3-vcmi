@@ -80,19 +80,21 @@ std::string SaiBridge::address() const
 	return bind;
 }
 
-int SaiBridge::decide(std::string payload, const std::vector<bool> & mask)
+SaiDecision SaiBridge::decide(std::string payload, const std::vector<bool> & mask, int castCount)
 {
 	auto queued = std::lock_guard<std::mutex>(turnstile);
 	auto lock = std::unique_lock<std::mutex>(mutex);
 
 	pending = std::move(payload);
 	pendingMask = &mask;
+	pendingCasts = castCount;
 	hasChosen = false;
 
 	auto answered = cv.wait_for(lock, std::chrono::seconds(timeoutSeconds), [this] { return hasChosen; });
 
 	pending.clear();
 	pendingMask = nullptr;
+	pendingCasts = 0;
 
 	if(!answered)
 		throw std::runtime_error("SaiBridge: no action posted within " + std::to_string(timeoutSeconds) + "s");
@@ -111,6 +113,34 @@ std::string SaiBridge::dispatch(const std::string & method, const std::string & 
 		if(pending.empty())
 			return Respond(200, R"({"pending":false})");
 		return Respond(200, pending);
+	}
+
+	if(path == "/cast" && method == "POST")
+	{
+		int index = 0;
+		try
+		{
+			index = std::stoi(body);
+		}
+		catch(const std::exception &)
+		{
+			return Respond(400, R"({"ok":false,"reason":"body is not an integer"})");
+		}
+
+		auto lock = std::lock_guard<std::mutex>(mutex);
+		if(pending.empty())
+			return Respond(400, R"({"ok":false,"reason":"no decision pending"})");
+
+		if(pendingCasts == 0)
+			return Respond(400, R"({"ok":false,"reason":"no casts offered for this decision"})");
+
+		if(index < 0 || index >= pendingCasts)
+			return Respond(400, R"({"ok":false,"reason":"cast index out of range"})");
+
+		chosen = SaiDecision{true, index};
+		hasChosen = true;
+		cv.notify_all();
+		return Respond(200, R"({"ok":true})");
 	}
 
 	if(path == "/action" && method == "POST")
@@ -134,7 +164,7 @@ std::string SaiBridge::dispatch(const std::string & method, const std::string & 
 		if(action < 0 || pendingMask == nullptr || action >= static_cast<int>(pendingMask->size()) || !pendingMask->at(action))
 			return Respond(400, R"({"ok":false,"reason":"action is not in the legal mask"})");
 
-		chosen = action;
+		chosen = SaiDecision{false, action};
 		hasChosen = true;
 		cv.notify_all();
 		return Respond(200, R"({"ok":true})");
