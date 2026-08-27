@@ -98,12 +98,12 @@ jobs:
         '
     - name: Setup MSVC Developer Command Prompt
       if: ${{ startsWith(matrix.platform, 'msvc') }}
-      uses: step-security/msvc-dev-cmd@main
+      uses: ilammy/msvc-dev-cmd@v1.13.0
       with:
         arch: ${{ matrix.arch }}
         toolset: ${{ matrix.toolset }}
     - name: Setup compiler cache for PRs
-      uses: step-security/ccache-action@v1
+      uses: hendrikmuhs/ccache-action@v1.2.23
       if: ${{ github.event.number != '' }}
       with:
         variant: ${{ startsWith(matrix.platform, 'msvc') && 'sccache' || 'ccache' }}
@@ -120,7 +120,7 @@ jobs:
         verbose: 2
         job-summary: ''
     - name: Setup compiler cache for branch builds
-      uses: step-security/ccache-action@v1
+      uses: hendrikmuhs/ccache-action@v1.2.23
       if: ${{ github.event.number == '' }}
       with:
         variant: ${{ startsWith(matrix.platform, 'msvc') && 'sccache' || 'ccache' }}
