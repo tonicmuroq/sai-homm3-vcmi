@@ -151,6 +151,10 @@ void CSettingsView::fillValidAdventureAILibraries(QComboBox * comboBox, QString 
 	comboBox->addItem(tr("Nullkiller2 (default, recommended)"), "Nullkiller2");
 #endif
 
+#ifdef ENABLE_MMAI
+	comboBox->addItem(tr("SaiAI"), "SaiAI");
+#endif
+
 	fillValidAnyAILibraries(comboBox, activeAI);
 	comboBox->blockSignals(false);
 }

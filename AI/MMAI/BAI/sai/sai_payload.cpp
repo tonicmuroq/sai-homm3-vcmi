@@ -61,30 +61,31 @@ namespace
 		return out;
 	}
 
-	std::string JsonEscape(const std::string & text)
+}
+
+std::string JsonEscape(const std::string & text)
+{
+	auto out = std::string();
+	out.reserve(text.size() + 16);
+
+	for(unsigned char c : text)
 	{
-		auto out = std::string();
-		out.reserve(text.size() + 16);
-
-		for(unsigned char c : text)
+		switch(c)
 		{
-			switch(c)
-			{
-				case '"': out += "\\\""; break;
-				case '\\': out += "\\\\"; break;
-				case '\n': out += "\\n"; break;
-				case '\r': out += "\\r"; break;
-				case '\t': out += "\\t"; break;
-				default:
-					if(c < 0x20)
-						out += boost::str(boost::format("\\u%04x") % static_cast<int>(c));
-					else
-						out.push_back(static_cast<char>(c));
-			}
+			case '"': out += "\\\""; break;
+			case '\\': out += "\\\\"; break;
+			case '\n': out += "\\n"; break;
+			case '\r': out += "\\r"; break;
+			case '\t': out += "\\t"; break;
+			default:
+				if(c < 0x20)
+					out += boost::str(boost::format("\\u%04x") % static_cast<int>(c));
+				else
+					out.push_back(static_cast<char>(c));
 		}
-
-		return out;
 	}
+
+	return out;
 }
 
 std::string DescribeAction(int action)
@@ -114,6 +115,7 @@ std::string BuildSaiPayload(
 )
 {
 	auto out = std::string("{");
+	out += R"("kind":"battle",)";
 	out += R"("color":")" + JsonEscape(color) + R"(",)";
 	out += R"("side":")" + JsonEscape(side) + R"(",)";
 	out += R"("mana":)" + std::to_string(mana) + ",";

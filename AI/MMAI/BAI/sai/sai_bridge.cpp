@@ -102,6 +102,26 @@ SaiDecision SaiBridge::decide(std::string payload, const std::vector<bool> & mas
 	return chosen;
 }
 
+int SaiBridge::decideOption(std::string payload, int optionCount)
+{
+	auto queued = std::lock_guard<std::mutex>(turnstile);
+	auto lock = std::unique_lock<std::mutex>(mutex);
+
+	pending = std::move(payload);
+	pendingOptions = optionCount;
+	hasChosen = false;
+
+	auto answered = cv.wait_for(lock, std::chrono::seconds(timeoutSeconds), [this] { return hasChosen; });
+
+	pending.clear();
+	pendingOptions = 0;
+
+	if(!answered)
+		throw std::runtime_error("SaiBridge: no option posted within " + std::to_string(timeoutSeconds) + "s");
+
+	return chosen.value;
+}
+
 std::string SaiBridge::dispatch(const std::string & method, const std::string & path, const std::string & body)
 {
 	if(path == "/health")
@@ -113,6 +133,34 @@ std::string SaiBridge::dispatch(const std::string & method, const std::string & 
 		if(pending.empty())
 			return Respond(200, R"({"pending":false})");
 		return Respond(200, pending);
+	}
+
+	if(path == "/option" && method == "POST")
+	{
+		int index = 0;
+		try
+		{
+			index = std::stoi(body);
+		}
+		catch(const std::exception &)
+		{
+			return Respond(400, R"({"ok":false,"reason":"body is not an integer"})");
+		}
+
+		auto lock = std::lock_guard<std::mutex>(mutex);
+		if(pending.empty())
+			return Respond(400, R"({"ok":false,"reason":"no decision pending"})");
+
+		if(pendingOptions == 0)
+			return Respond(400, R"({"ok":false,"reason":"this decision expects /action or /cast"})");
+
+		if(index < 0 || index >= pendingOptions)
+			return Respond(400, R"({"ok":false,"reason":"option index out of range"})");
+
+		chosen = SaiDecision{false, index};
+		hasChosen = true;
+		cv.notify_all();
+		return Respond(200, R"({"ok":true})");
 	}
 
 	if(path == "/cast" && method == "POST")
@@ -130,6 +178,9 @@ std::string SaiBridge::dispatch(const std::string & method, const std::string & 
 		auto lock = std::lock_guard<std::mutex>(mutex);
 		if(pending.empty())
 			return Respond(400, R"({"ok":false,"reason":"no decision pending"})");
+
+		if(pendingOptions > 0)
+			return Respond(400, R"({"ok":false,"reason":"this decision expects /option"})");
 
 		if(pendingCasts == 0)
 			return Respond(400, R"({"ok":false,"reason":"no casts offered for this decision"})");
@@ -158,6 +209,9 @@ std::string SaiBridge::dispatch(const std::string & method, const std::string & 
 		auto lock = std::lock_guard<std::mutex>(mutex);
 		if(pending.empty())
 			return Respond(400, R"({"ok":false,"reason":"no decision pending"})");
+
+		if(pendingOptions > 0)
+			return Respond(400, R"({"ok":false,"reason":"this decision expects /option"})");
 
 		// Refusing here beats letting the engine reject it: the caller still holds
 		// the turn and can post a different action.

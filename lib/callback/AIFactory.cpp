@@ -23,6 +23,7 @@
 #endif
 #ifdef ENABLE_MMAI
 #  include "../../AI/MMAI/MMAI.h"
+#  include "../../AI/MMAI/BAI/sai/sai_adventure.h"
 #endif
 #include "../../AI/EmptyAI/CEmptyAI.h"
 
@@ -38,6 +39,17 @@ std::shared_ptr<CGlobalAI> AIFactory::createAdventureAI(const std::string & name
 		return ret;
 #else
 		throw std::runtime_error("Nullkiller2 is not available in this build!");
+#endif
+	}
+
+	if(name == "SaiAI")
+	{
+#ifdef ENABLE_MMAI
+		auto ret = std::make_shared<MMAI::BAI::SaiAdventureAI>();
+		ret->dllName = name;
+		return ret;
+#else
+		throw std::runtime_error("SaiAI is not available in this build!");
 #endif
 	}
 
@@ -80,6 +92,10 @@ bool AIFactory::isAvailableAdventureAI(const std::string & name)
 		return true;
 #ifdef ENABLE_NULLKILLER2_AI
 	if(name == "Nullkiller2")
+		return true;
+#endif
+#ifdef ENABLE_MMAI
+	if(name == "SaiAI")
 		return true;
 #endif
 	return false;

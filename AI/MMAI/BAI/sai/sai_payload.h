@@ -22,6 +22,8 @@ struct SaiCastInfo
 	std::vector<int> hexes;
 };
 
+std::string JsonEscape(const std::string & text);
+
 std::string DescribeAction(int action);
 
 std::string BuildSaiPayload(

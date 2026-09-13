@@ -37,6 +37,10 @@ public:
 	// castCount bounds the accepted /cast index; 0 means no spells were offered.
 	SaiDecision decide(std::string payload, const std::vector<bool> & mask, int castCount);
 
+	// Adventure-map counterpart: the caller enumerates its own legal options and the
+	// answer is an index into that list, so nothing illegal can be posted.
+	int decideOption(std::string payload, int optionCount);
+
 	std::string address() const;
 
 private:
@@ -56,6 +60,7 @@ private:
 	std::string pending;
 	const std::vector<bool> * pendingMask = nullptr;
 	int pendingCasts = 0;
+	int pendingOptions = 0;
 	SaiDecision chosen;
 	bool hasChosen = false;
 
