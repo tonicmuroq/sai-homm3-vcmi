@@ -13,6 +13,7 @@
 #include "../../../../lib/CCreatureHandler.h"
 #include "../../../../lib/CThreadHelper.h"
 #include "../../../../lib/ResourceSet.h"
+#include "../../../../lib/battle/BattleAction.h"
 #include "../../../../lib/callback/CCallback.h"
 #include "../../../../lib/callback/Calendar.h"
 #include "../../../../lib/mapObjects/CGHeroInstance.h"
