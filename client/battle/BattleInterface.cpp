@@ -405,6 +405,13 @@ void BattleInterface::battleFinished(const BattleResult& br, QueryID queryID)
 	};
 	ENGINE->windows().pushWindow(wnd);
 
+	// The result window carries no decision and appears after every single fight, so
+	// leaving it for a human to dismiss would stall the agent between battles. Pressing
+	// it from the main thread is the same path a click takes; waitWhileDialog below
+	// releases interfaceMutex, so the press gets through.
+	if(SaiAdventurePilot::enabled())
+		ENGINE->dispatchMainThread([wnd] { wnd->bExitf(); });
+
 	curInt->waitWhileDialog(); // Avoid freeze when AI end turn after battle. Check bug #1897
 	CPlayerInterface::battleInt.reset();
 }

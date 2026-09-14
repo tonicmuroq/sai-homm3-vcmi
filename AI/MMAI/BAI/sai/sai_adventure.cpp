@@ -17,6 +17,8 @@
 #include "../../../../lib/callback/CCallback.h"
 #include "../../../../lib/callback/Calendar.h"
 #include "../../../../lib/mapObjects/CGHeroInstance.h"
+#include "../../../../lib/entities/building/CBuilding.h"
+#include "../../../../lib/entities/faction/CTown.h"
 #include "../../../../lib/mapObjects/CGTownInstance.h"
 #include "../../../../lib/mapObjects/army/CCreatureSet.h"
 #include "../../../../lib/mapping/TerrainTile.h"
@@ -120,6 +122,77 @@ namespace
 
 		return out;
 	}
+
+	void AddTownOptions(CCallback & cb, std::vector<AdventureOption> & options)
+	{
+		auto purse = cb.getResourceAmount();
+
+		for(const auto * town : cb.getTownsInfo())
+		{
+			for(const auto & entry : town->getTown()->buildings)
+			{
+				// ALLOWED already accounts for money, prerequisites and the one-per-day rule.
+				if(cb.canBuildStructure(town, entry.first) != EBuildingState::ALLOWED)
+					continue;
+
+				options.push_back({
+					boost::str(
+						boost::format("BUILD %s at t%d %s [%s]") % entry.second->getNameTranslated() % town->id.getNum()
+						% town->getNameTranslated() % entry.second->resources.toString()
+					),
+					AdventureOption::Kind::Build,
+					town->id,
+					int3(),
+					entry.first,
+				});
+			}
+
+			for(size_t level = 0; level < town->creatures.size(); ++level)
+			{
+				const auto & dwelling = town->creatures[level];
+				if(dwelling.first == 0 || dwelling.second.empty())
+					continue;
+
+				// The last entry is the best upgrade the town has built.
+				auto id = dwelling.second.back();
+				auto cost = id.toCreature()->getFullRecruitCost();
+				auto amount = std::min<int>(dwelling.first, purse / cost);
+
+				if(amount <= 0)
+					continue;
+
+				auto option = AdventureOption{
+					boost::str(
+						boost::format("RECRUIT %d %s at t%d %s [%d available, %s each]") % amount
+						% id.toCreature()->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
+						% dwelling.first % cost.toString()
+					),
+					AdventureOption::Kind::Recruit,
+					town->id,
+				};
+				option.creature = id;
+				option.level = static_cast<int>(level);
+				option.amount = amount;
+				options.push_back(option);
+			}
+		}
+	}
+}
+
+std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
+{
+	const auto * town = cb.getTown(option.target);
+	if(town == nullptr)
+		return "town is gone";
+
+	if(option.kind == AdventureOption::Kind::Build)
+	{
+		cb.buildBuilding(town, option.building);
+		return option.desc + ", requested";
+	}
+
+	cb.recruitCreatures(town, town->getUpperArmy(), option.creature, option.amount, option.level);
+	return option.desc + ", requested";
 }
 
 std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor)
@@ -151,6 +224,7 @@ std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFo
 					boost::format("MOVE h%d -> %s %s [%d mp left]") % hero->id.getNum() % Coord(dest)
 					% obj->getObjectName() % node->moveRemains
 				),
+				AdventureOption::Kind::Move,
 				hero->id,
 				dest,
 			});
@@ -199,13 +273,16 @@ std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFo
 					boost::format("MOVE h%d %s -> %s [%d mp left]") % hero->id.getNum() % DIRECTION_NAMES[d]
 					% Coord(best[d]->coord) % best[d]->moveRemains
 				),
+				AdventureOption::Kind::Move,
 				hero->id,
 				best[d]->coord,
 			});
 		}
 	}
 
-	options.push_back({"END TURN", ObjectInstanceID::NONE, int3(), true});
+	AddTownOptions(cb, options);
+
+	options.push_back({"END TURN", AdventureOption::Kind::EndTurn});
 	return options;
 }
 
@@ -356,7 +433,7 @@ void SaiAdventureAI::makeTurn()
 
 			logAi->info("SaiAdventureAI: Sai chose %d, %s", chosen, option.desc);
 
-			if(option.endTurn)
+			if(option.kind == AdventureOption::Kind::EndTurn)
 				break;
 
 			execute(option);
@@ -372,7 +449,13 @@ void SaiAdventureAI::makeTurn()
 
 void SaiAdventureAI::execute(const AdventureOption & option)
 {
-	const auto * hero = cb->getHero(option.hero);
+	if(option.kind != AdventureOption::Kind::Move)
+	{
+		lastResult = ApplyTownOption(*cb, option);
+		return;
+	}
+
+	const auto * hero = cb->getHero(option.target);
 	if(hero == nullptr)
 	{
 		lastResult = "hero is gone";

@@ -102,7 +102,7 @@ void SaiAdventurePilot::run()
 		const auto & option = options.at(chosen);
 		logGlobal->info("SaiAdventurePilot: Sai chose %d, %s", chosen, option.desc);
 
-		if(option.endTurn)
+		if(option.kind == MMAI::BAI::AdventureOption::Kind::EndTurn)
 			break;
 
 		execute(option);
@@ -118,7 +118,16 @@ void SaiAdventurePilot::run()
 
 void SaiAdventurePilot::execute(const MMAI::BAI::AdventureOption & option)
 {
-	const auto * hero = owner.cb->getHero(option.hero);
+	if(option.kind != MMAI::BAI::AdventureOption::Kind::Move)
+	{
+		// Town orders are plain callback sends with no animation to wait on; the short
+		// settle is so the next decision is not offered the same build twice.
+		lastResult = MMAI::BAI::ApplyTownOption(*owner.cb, option);
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		return;
+	}
+
+	const auto * hero = owner.cb->getHero(option.target);
 	if(hero == nullptr)
 	{
 		lastResult = "hero is gone";

@@ -28,15 +28,29 @@ namespace MMAI::BAI
 {
 struct AdventureOption
 {
+	enum class Kind : uint8_t
+	{
+		Move,
+		Build,
+		Recruit,
+		EndTurn,
+	};
+
 	std::string desc;
-	ObjectInstanceID hero;
+	Kind kind = Kind::Move;
+	ObjectInstanceID target; // the hero to move, or the town to build in
 	int3 dest;
-	bool endTurn = false;
+	BuildingID building;
+	CreatureID creature;
+	int level = 0;
+	int amount = 0;
 };
 
 // The client already owns a pathfinder cache and the engine invalidates it on every
 // pack that could move a hero, so the caller passes its own rather than keeping a second.
 using PathsFor = std::function<std::shared_ptr<const CPathsInfo>(const CGHeroInstance *)>;
+
+DLL_LINKAGE std::string ApplyTownOption(CCallback & cb, const AdventureOption & option);
 
 DLL_LINKAGE std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor);
 

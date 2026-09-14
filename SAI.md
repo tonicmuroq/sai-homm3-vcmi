@@ -67,6 +67,11 @@ The pilot waits while a battle is running, while autocombat is on, and while a d
 up — an adventure decision offered at those moments would leave the agent holding the wrong
 kind of question with the battle queued behind it.
 
+The battle result window is the one dialog the pilot dismisses itself. It carries no
+decision, it appears after every single fight, and waiting for a human to click it would
+stall the agent between battles; `BattleInterface::battleFinished` presses it through
+`dispatchMainThread`, which is the same path a click takes.
+
 If the agent does not answer within `VCMI_SAI_TIMEOUT`, the pilot **hands the turn back**
 rather than ending it: the player is sitting in front of a fully working interface and can
 simply play.
@@ -82,8 +87,10 @@ movement:
 - the furthest reachable tile in each of the 8 directions, because object-hopping alone
   cannot open up an unexplored map
 
-plus `END TURN`. The answer is an index into that list (`POST /option`), so nothing illegal
-can be posted — the same property `getActionMask` gives the battle side, reconstructed. The
+plus, per town, every building `canBuildStructure` reports as `ALLOWED` (which already
+accounts for money, prerequisites and the one-per-day rule) and every dwelling with
+creatures left, capped at what the treasury can pay for — plus `END TURN`. The answer is an
+index into that list (`POST /option`), so nothing illegal can be posted — the same property `getActionMask` gives the battle side, reconstructed. The
 pathfinder is the client's own `PathfinderCache`, the one behind the move arrows, and the
 engine already invalidates it on every pack that could move a hero.
 
