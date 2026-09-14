@@ -11,6 +11,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -18,7 +19,10 @@
 
 #include "../../../../lib/callback/CAdventureAI.h"
 
+class CCallback;
+class CGHeroInstance;
 class PathfinderCache;
+struct CPathsInfo;
 
 namespace MMAI::BAI
 {
@@ -29,6 +33,20 @@ struct AdventureOption
 	int3 dest;
 	bool endTurn = false;
 };
+
+// The client already owns a pathfinder cache and the engine invalidates it on every
+// pack that could move a hero, so the caller passes its own rather than keeping a second.
+using PathsFor = std::function<std::shared_ptr<const CPathsInfo>(const CGHeroInstance *)>;
+
+DLL_LINKAGE std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor);
+
+DLL_LINKAGE std::string BuildAdventurePayload(
+	CCallback & cb,
+	const PathsFor & pathsFor,
+	const PlayerColor & player,
+	const std::vector<AdventureOption> & options,
+	const std::string & last
+);
 
 class SaiAdventureAI : public CAdventureAI
 {
@@ -53,10 +71,7 @@ public:
 
 private:
 	void makeTurn();
-	std::vector<AdventureOption> buildOptions();
 	void execute(const AdventureOption & option);
-	std::string buildPayload(const std::vector<AdventureOption> & options);
-	std::string renderAround(const CGHeroInstance * hero, int radius);
 
 	// Queries arrive on the client's pack thread while the turn thread is parked inside
 	// a realized request, so answering has to happen off both of them.
@@ -64,6 +79,7 @@ private:
 
 	std::shared_ptr<CCallback> cb;
 	std::unique_ptr<PathfinderCache> paths;
+	PathsFor pathsFor;
 	std::thread turnThread;
 	std::atomic<bool> stopping{false};
 	std::string lastResult;

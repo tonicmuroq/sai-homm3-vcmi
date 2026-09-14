@@ -24,7 +24,7 @@ struct SaiDecision
 	int value = 0; // action number, or index into the offered cast list
 };
 
-class SaiBridge
+class DLL_LINKAGE SaiBridge
 {
 public:
 	static SaiBridge & instance();

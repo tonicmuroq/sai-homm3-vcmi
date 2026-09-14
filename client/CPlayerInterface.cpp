@@ -15,6 +15,7 @@
 #include "Client.h"
 #include "CServerHandler.h"
 #include "HeroMovementController.h"
+#include "SaiAdventurePilot.h"
 #include "PlayerLocalState.h"
 
 #include "adventureMap/AdventureMapInterface.h"
@@ -148,6 +149,9 @@ CPlayerInterface::CPlayerInterface(PlayerColor Player):
 	isAutoFightEndBattle = false;
 	ignoreEvents = false;
 	hasQuickSave = false;
+
+	if(SaiAdventurePilot::enabled())
+		saiPilot = std::make_unique<SaiAdventurePilot>(*this);
 }
 
 CPlayerInterface::~CPlayerInterface()
@@ -176,6 +180,11 @@ void CPlayerInterface::initGameInterface(std::shared_ptr<Environment> ENV, std::
 std::shared_ptr<const CPathsInfo> CPlayerInterface::getPathsInfo(const CGHeroInstance * h)
 {
 	return pathfinderCache->getPathsInfo(h);
+}
+
+bool CPlayerInterface::isHeroMoving() const
+{
+	return movementController->isHeroMoving();
 }
 
 void CPlayerInterface::invalidatePaths()
@@ -308,6 +317,9 @@ void CPlayerInterface::yourTurn(QueryID queryID)
 		}
 
 	acceptTurn(queryID, hotseatWait);
+
+	if(saiPilot)
+		saiPilot->startTurn();
 }
 
 void CPlayerInterface::acceptTurn(QueryID queryID, bool hotseatWait)

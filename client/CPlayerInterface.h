@@ -28,6 +28,7 @@ class UpgradeInfo;
 class ConditionalWait;
 struct CPathsInfo;
 class PathfinderCache;
+class SaiAdventurePilot;
 
 class CButton;
 class AdventureMapInterface;
@@ -84,6 +85,7 @@ class CPlayerInterface : public CGameInterface
 
 	std::unique_ptr<HeroMovementController> movementController;
 	std::unique_ptr<PathfinderCache> pathfinderCache;
+	std::unique_ptr<SaiAdventurePilot> saiPilot;
 public: // TODO: make private
 	std::unique_ptr<ArtifactsUIController> artifactController;
 	std::shared_ptr<Environment> env;
@@ -234,6 +236,7 @@ public: // public interface for use by client via GAME->interface() access
 	void endNetwork();
 	void closeAllDialogs();
 	std::shared_ptr<const CPathsInfo> getPathsInfo(const CGHeroInstance * h);
+	bool isHeroMoving() const;
 	void invalidatePaths() override;
 
 	///returns true if all events are processed internally

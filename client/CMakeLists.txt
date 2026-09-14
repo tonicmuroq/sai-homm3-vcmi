@@ -221,6 +221,7 @@ set(vcmiclientcommon_SRCS
 	ClientCommandManager.cpp
 	GameChatHandler.cpp
 	HeroMovementController.cpp
+	SaiAdventurePilot.cpp
 	NetPacksClient.cpp
 	NetPacksLobbyClient.cpp
 	ServerRunner.cpp
@@ -478,6 +479,7 @@ set(vcmiclientcommon_HEADERS
 	ClientCommandManager.h
 	ClientNetPackVisitors.h
 	HeroMovementController.h
+	SaiAdventurePilot.h
 	GameChatHandler.h
 	LobbyClientNetPackVisitors.h
 	ServerRunner.h

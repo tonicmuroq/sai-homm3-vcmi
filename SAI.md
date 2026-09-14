@@ -38,36 +38,61 @@ create its screen texture there and the client dies with `Disaster happened.`
 
 ## The adventure map
 
-`SaiAdventureAI` (`AI/MMAI/BAI/sai/sai_adventure.cpp`) is a `CAdventureAI`, selected by name:
+Sai plays **the player's own seat**, the same relationship the autocombat button has to a
+battle: the interface, the map, the fog and every dialog stay the player's, and Sai issues
+the moves they would otherwise click.
+
+`SaiAdventurePilot` (`client/SaiAdventurePilot.cpp`) is the mirror of `autofightingAI`.
+`CPlayerInterface` owns one when `VCMI_SAI_ADVENTURE` is set, and hands it each turn at the
+end of `yourTurn`. It runs on its own thread and drives moves through
+`CPlayerInterface::moveHero` — the very entry point a click on the map uses — so the hero
+animates, objects are visited and dialogs pop up exactly as they always did. The turn ends
+through `AdventureMapInterface::hotkeyEndingTurn`.
+
+Battles are not the pilot's business: turn on **quick combat**
+(`adventure.quickCombat`, or `forceQuickCombat`) and `CPlayerInterface::battleStart` hands
+every battle to `combatAlliedAI`, which is MMAI, which is the same bridge. One agent loop
+therefore plays the whole game.
 
 ```json
-{ "ai": { "adventureAlliedAI": "SaiAI" } }
+{ "ai": { "combatAlliedAI": "MMAI" }, "adventure": { "quickCombat": true } }
 ```
 
-`adventureAlliedAI` drives an AI player that is **allied to a human**, so the way to watch Sai play is
-to start a map with a computer player on your own team: teams share fog of war, so its heroes move in
-plain sight. `adventureEnemyAI` puts Sai on the other side instead.
+The pilot waits while a battle is running, while autocombat is on, and while a dialog is
+up — an adventure decision offered at those moments would leave the agent holding the wrong
+kind of question with the battle queued behind it.
 
-Its `getBattleAIName()` returns `MMAI`, so battles fought on the adventure map go through the same
-bridge as autocombat — one agent plays both halves.
+If the agent does not answer within `VCMI_SAI_TIMEOUT`, the pilot **hands the turn back**
+rather than ending it: the player is sitting in front of a fully working interface and can
+simply play.
 
-Unlike combat, the engine offers no legal-action mask and no text render for the adventure map, so
-both are built here. Each decision enumerates, per hero that still has movement:
+### What the agent is given
 
-- every visitable object the pathfinder says is reachable **this turn** (`CPathsInfo`, `turns == 0`)
-- the furthest reachable tile in each of the 8 directions, because object-hopping alone cannot open up
-  an unexplored map
+Unlike combat, the engine offers no legal-action mask and no text render for the adventure
+map, so both are built in `BuildAdventureOptions` / `BuildAdventurePayload`
+(`AI/MMAI/BAI/sai/sai_adventure.cpp`). Each decision enumerates, per hero that still has
+movement:
 
-plus `END TURN`. The answer is an index into that list, so nothing illegal can be posted — the same
-property `getActionMask` gives the battle side, reconstructed.
+- every visitable object the pathfinder puts at `turns == 0` — reachable **this** turn
+- the furthest reachable tile in each of the 8 directions, because object-hopping alone
+  cannot open up an unexplored map
 
-The render is a `?`-for-fog grid per hero: `.` open, `,` open and reachable this turn, `#` blocked,
-`~` water, `H`/`h` own/other hero, `T`/`t` own/other town, `M` monster, `$` resource, `%` mine,
-`!` artifact, `o` any other visitable object.
+plus `END TURN`. The answer is an index into that list (`POST /option`), so nothing illegal
+can be posted — the same property `getActionMask` gives the battle side, reconstructed. The
+pathfinder is the client's own `PathfinderCache`, the one behind the move arrows, and the
+engine already invalidates it on every pack that could move a hero.
 
-Dialogs are not routed to the agent yet: a blocking dialog is answered `1` (the brave-AI default —
-declining would leave the hero where it was and re-offer the same move forever), skill choices take
-the first option. What actually pops up is logged, which is how that list will get written.
+The render is a `?`-for-fog grid per hero: `.` open, `,` open and reachable this turn,
+`#` blocked, `~` water, `H`/`h` own/other hero, `T`/`t` own/other town, `M` monster,
+`$` resource, `%` mine, `!` artifact, `o` any other visitable object.
+
+### The headless variant
+
+`SaiAdventureAI` is the same thing as a `CAdventureAI`, for a seat with no human behind it.
+It is selected by name in `adventureAlliedAI` / `adventureEnemyAI`, answers dialogs itself
+(a blocking dialog gets `1` — the brave-AI default; declining would leave the hero where it
+was and re-offer the same move forever), and returns `MMAI` from `getBattleAIName()` so its
+battles use the bridge too. It shares the option and payload building with the pilot.
 
 ## One decision worth knowing
 

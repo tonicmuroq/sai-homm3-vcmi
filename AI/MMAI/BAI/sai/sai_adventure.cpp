@@ -62,102 +62,77 @@ namespace
 		}
 		return out.empty() ? "none" : out;
 	}
-}
 
-SaiAdventureAI::SaiAdventureAI() = default;
-
-SaiAdventureAI::~SaiAdventureAI()
-{
-	stopping = true;
-	if(turnThread.joinable())
-		turnThread.detach();
-}
-
-std::string SaiAdventureAI::getBattleAIName() const
-{
-	return "MMAI";
-}
-
-void SaiAdventureAI::initGameInterface(std::shared_ptr<Environment> ENV, std::shared_ptr<CCallback> CB)
-{
-	env = ENV;
-	cb = CB;
-	cbc = CB;
-	human = false;
-	playerID = *cb->getPlayerID();
-
-	// Every action is issued from our own thread, so blocking until the server has
-	// realized it keeps the state we read afterwards consistent with what we did.
-	cb->waitTillRealize = true;
-
-	paths = std::make_unique<PathfinderCache>(cb.get(), PathfinderOptions(*cb));
-
-	logAi->info("SaiAdventureAI: playing %s via %s", playerID.toString(), SaiBridge::instance().address());
-}
-
-void SaiAdventureAI::finish()
-{
-	stopping = true;
-}
-
-void SaiAdventureAI::invalidatePaths()
-{
-	if(paths)
-		paths->invalidatePaths();
-}
-
-void SaiAdventureAI::yourTurn(QueryID queryID)
-{
-	if(turnThread.joinable())
-		turnThread.join();
-
-	turnThread = std::thread([this, queryID]
+	std::string RenderAround(CCallback & cb, const CPathsInfo & info, const CGHeroInstance * hero, const PlayerColor & player)
 	{
-		setThreadName("SaiAdventureAI");
-		cb->selectionMade(0, queryID);
-		makeTurn();
-	});
-}
+		auto here = hero->visitablePos();
+		auto out = std::string();
 
-void SaiAdventureAI::makeTurn()
-{
-	try
-	{
-		for(int decision = 0; decision < MAX_DECISIONS_PER_TURN && !stopping; ++decision)
+		for(int y = here.y - VIEW_RADIUS; y <= here.y + VIEW_RADIUS; ++y)
 		{
-			paths->invalidatePaths();
+			for(int x = here.x - VIEW_RADIUS; x <= here.x + VIEW_RADIUS; ++x)
+			{
+				auto pos = int3(x, y, here.z);
 
-			auto options = buildOptions();
-			auto chosen = SaiBridge::instance().decideOption(buildPayload(options), static_cast<int>(options.size()));
-			const auto & option = options.at(chosen);
+				if(!cb.isInTheMap(pos))
+				{
+					out += ' ';
+					continue;
+				}
 
-			logAi->info("SaiAdventureAI: Sai chose %d, %s", chosen, option.desc);
+				const auto * tile = cb.getTile(pos, false);
+				if(tile == nullptr)
+				{
+					out += '?';
+					continue;
+				}
 
-			if(option.endTurn)
-				break;
+				auto glyph = '.';
+				if(tile->isWater())
+					glyph = '~';
+				if(tile->blocked())
+					glyph = '#';
 
-			execute(option);
+				const auto * top = cb.getTopObj(pos);
+				if(top != nullptr)
+				{
+					switch(top->ID.toEnum())
+					{
+						case Obj::HERO: glyph = top->getOwner() == player ? 'H' : 'h'; break;
+						case Obj::TOWN: glyph = top->getOwner() == player ? 'T' : 't'; break;
+						case Obj::MONSTER: glyph = 'M'; break;
+						case Obj::RESOURCE: glyph = '$'; break;
+						case Obj::MINE: glyph = '%'; break;
+						case Obj::ARTIFACT: glyph = '!'; break;
+						default: glyph = 'o';
+					}
+				}
+
+				// Marking what is reachable this turn keeps both facts in one grid.
+				const auto * node = info.getPathInfo(pos);
+				if(glyph == '.' && node->turns == 0 && node->reachable())
+					glyph = ',';
+
+				out += glyph;
+			}
+			out += '\n';
 		}
-	}
-	catch(const std::exception & e)
-	{
-		logAi->warn("SaiAdventureAI: %s, ending the turn", e.what());
-	}
 
-	cb->endTurn();
+		return out;
+	}
 }
 
-std::vector<AdventureOption> SaiAdventureAI::buildOptions()
+std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor)
 {
 	auto options = std::vector<AdventureOption>();
-	auto visitable = cb->getAllVisitableObjs();
+	auto visitable = cb.getAllVisitableObjs();
 
-	for(const auto * hero : cb->getHeroesInfo())
+	for(const auto * hero : cb.getHeroesInfo())
 	{
 		if(hero->movementPointsRemaining() <= 0 || hero->isGarrisoned())
 			continue;
 
-		auto info = paths->getPathsInfo(hero);
+		auto info = pathsFor(hero);
 		auto taken = std::set<int3>();
 
 		for(const auto * obj : visitable)
@@ -192,7 +167,7 @@ std::vector<AdventureOption> SaiAdventureAI::buildOptions()
 			for(int dx = -VIEW_RADIUS; dx <= VIEW_RADIUS; ++dx)
 			{
 				auto dest = int3(from.x + dx, from.y + dy, from.z);
-				if((dx == 0 && dy == 0) || !cb->isInTheMap(dest) || taken.count(dest))
+				if((dx == 0 && dy == 0) || !cb.isInTheMap(dest) || taken.count(dest))
 					continue;
 
 				const auto * node = info->getPathInfo(dest);
@@ -234,6 +209,167 @@ std::vector<AdventureOption> SaiAdventureAI::buildOptions()
 	return options;
 }
 
+std::string BuildAdventurePayload(
+	CCallback & cb,
+	const PathsFor & pathsFor,
+	const PlayerColor & player,
+	const std::vector<AdventureOption> & options,
+	const std::string & last
+)
+{
+	auto calendar = cb.getCalendar();
+	auto out = std::string("{");
+
+	out += R"("kind":"adventure",)";
+	out += R"("color":")" + JsonEscape(player.toString()) + R"(",)";
+	out += boost::str(
+		boost::format(R"("day":%d,"dayOfWeek":%d,"week":%d,"month":%d,)") % calendar.getCurrentDay() % calendar.getDayOfWeek()
+		% calendar.getWeek() % calendar.getMonth()
+	);
+	out += R"("last":")" + JsonEscape(last) + R"(",)";
+
+	out += R"("resources":{)";
+	for(size_t i = 0; i < RESOURCE_NAMES.size(); ++i)
+	{
+		if(i > 0)
+			out += ",";
+		out += R"(")" + std::string(RESOURCE_NAMES[i]) + R"(":)" + std::to_string(cb.getResourceAmount(GameResID(static_cast<int32_t>(i))));
+	}
+	out += "},";
+
+	auto render = std::string();
+
+	out += R"("heroes":[)";
+	auto heroes = cb.getHeroesInfo();
+	for(size_t i = 0; i < heroes.size(); ++i)
+	{
+		const auto * hero = heroes[i];
+		if(i > 0)
+			out += ",";
+		out += boost::str(
+			boost::format(R"({"id":%d,"name":"%s","level":%d,"pos":[%d,%d,%d],"movement":[%d,%d],"mana":[%d,%d],"army":"%s"})")
+			% hero->id.getNum() % JsonEscape(hero->getNameTranslated()) % hero->level % hero->visitablePos().x
+			% hero->visitablePos().y % hero->visitablePos().z % hero->movementPointsRemaining() % hero->movementPointsLimit()
+			% hero->mana % hero->manaLimit() % JsonEscape(ArmyOf(hero))
+		);
+
+		render += boost::str(boost::format("--- around h%d %s %s ---\n") % hero->id.getNum() % hero->getNameTranslated() % Coord(hero->visitablePos()));
+		render += RenderAround(cb, *pathsFor(hero), hero, player);
+	}
+	out += "],";
+
+	out += R"("towns":[)";
+	auto towns = cb.getTownsInfo();
+	for(size_t i = 0; i < towns.size(); ++i)
+	{
+		const auto * town = towns[i];
+		if(i > 0)
+			out += ",";
+		out += boost::str(
+			boost::format(R"({"id":%d,"name":"%s","pos":[%d,%d,%d],"garrison":"%s"})") % town->id.getNum()
+			% JsonEscape(town->getNameTranslated()) % town->visitablePos().x % town->visitablePos().y % town->visitablePos().z
+			% JsonEscape(ArmyOf(town))
+		);
+	}
+	out += "],";
+
+	out += R"("render":")" + JsonEscape(render) + R"(",)";
+
+	out += R"("options":[)";
+	for(size_t i = 0; i < options.size(); ++i)
+	{
+		if(i > 0)
+			out += ",";
+		out += R"({"idx":)" + std::to_string(i) + R"(,"desc":")" + JsonEscape(options[i].desc) + R"("})";
+	}
+	out += "]}";
+
+	return out;
+}
+
+SaiAdventureAI::SaiAdventureAI() = default;
+
+SaiAdventureAI::~SaiAdventureAI()
+{
+	stopping = true;
+	if(turnThread.joinable())
+		turnThread.detach();
+}
+
+std::string SaiAdventureAI::getBattleAIName() const
+{
+	return "MMAI";
+}
+
+void SaiAdventureAI::initGameInterface(std::shared_ptr<Environment> ENV, std::shared_ptr<CCallback> CB)
+{
+	env = ENV;
+	cb = CB;
+	cbc = CB;
+	human = false;
+	playerID = *cb->getPlayerID();
+
+	// Every action is issued from our own thread, so blocking until the server has
+	// realized it keeps the state we read afterwards consistent with what we did.
+	cb->waitTillRealize = true;
+
+	paths = std::make_unique<PathfinderCache>(cb.get(), PathfinderOptions(*cb));
+	pathsFor = [this](const CGHeroInstance * hero) { return paths->getPathsInfo(hero); };
+
+	logAi->info("SaiAdventureAI: playing %s via %s", playerID.toString(), SaiBridge::instance().address());
+}
+
+void SaiAdventureAI::finish()
+{
+	stopping = true;
+}
+
+void SaiAdventureAI::invalidatePaths()
+{
+	if(paths)
+		paths->invalidatePaths();
+}
+
+void SaiAdventureAI::yourTurn(QueryID queryID)
+{
+	if(turnThread.joinable())
+		turnThread.join();
+
+	turnThread = std::thread([this, queryID]
+	{
+		setThreadName("SaiAdventureAI");
+		cb->selectionMade(0, queryID);
+		makeTurn();
+	});
+}
+
+void SaiAdventureAI::makeTurn()
+{
+	try
+	{
+		for(int decision = 0; decision < MAX_DECISIONS_PER_TURN && !stopping; ++decision)
+		{
+			auto options = BuildAdventureOptions(*cb, pathsFor);
+			auto payload = BuildAdventurePayload(*cb, pathsFor, playerID, options, lastResult);
+			auto chosen = SaiBridge::instance().decideOption(std::move(payload), static_cast<int>(options.size()));
+			const auto & option = options.at(chosen);
+
+			logAi->info("SaiAdventureAI: Sai chose %d, %s", chosen, option.desc);
+
+			if(option.endTurn)
+				break;
+
+			execute(option);
+		}
+	}
+	catch(const std::exception & e)
+	{
+		logAi->warn("SaiAdventureAI: %s, ending the turn", e.what());
+	}
+
+	cb->endTurn();
+}
+
 void SaiAdventureAI::execute(const AdventureOption & option)
 {
 	const auto * hero = cb->getHero(option.hero);
@@ -243,18 +379,12 @@ void SaiAdventureAI::execute(const AdventureOption & option)
 		return;
 	}
 
-	auto info = paths->getPathsInfo(hero);
+	auto info = pathsFor(hero);
 	auto path = CGPath();
 
-	if(!info->getPath(path, option.dest))
+	if(!info->getPath(path, option.dest) || !path.hasNextNode())
 	{
 		lastResult = "no path to " + Coord(option.dest);
-		return;
-	}
-
-	if(!path.hasNextNode())
-	{
-		lastResult = "already standing at " + Coord(option.dest);
 		return;
 	}
 
@@ -285,137 +415,6 @@ void SaiAdventureAI::execute(const AdventureOption & option)
 
 	lastResult = boost::str(boost::format("%s, stopped at %s") % option.desc % Coord(batch.back()));
 	cb->moveHero(hero, batch, transit, layer);
-}
-
-std::string SaiAdventureAI::renderAround(const CGHeroInstance * hero, int radius)
-{
-	auto info = paths->getPathsInfo(hero);
-	auto here = hero->visitablePos();
-	auto out = std::string();
-
-	for(int y = here.y - radius; y <= here.y + radius; ++y)
-	{
-		for(int x = here.x - radius; x <= here.x + radius; ++x)
-		{
-			auto pos = int3(x, y, here.z);
-
-			if(!cb->isInTheMap(pos))
-			{
-				out += ' ';
-				continue;
-			}
-
-			const auto * tile = cb->getTile(pos, false);
-			if(tile == nullptr)
-			{
-				out += '?';
-				continue;
-			}
-
-			auto glyph = '.';
-			if(tile->isWater())
-				glyph = '~';
-			if(tile->blocked())
-				glyph = '#';
-
-			const auto * top = cb->getTopObj(pos);
-			if(top != nullptr)
-			{
-				switch(top->ID.toEnum())
-				{
-					case Obj::HERO: glyph = top->getOwner() == playerID ? 'H' : 'h'; break;
-					case Obj::TOWN: glyph = top->getOwner() == playerID ? 'T' : 't'; break;
-					case Obj::MONSTER: glyph = 'M'; break;
-					case Obj::RESOURCE: glyph = '$'; break;
-					case Obj::MINE: glyph = '%'; break;
-					case Obj::ARTIFACT: glyph = '!'; break;
-					default: glyph = 'o';
-				}
-			}
-
-			// Lowercasing what cannot be reached this turn keeps the two facts in one grid.
-			const auto * node = info->getPathInfo(pos);
-			if(glyph == '.' && node->turns == 0 && node->reachable())
-				glyph = ',';
-
-			out += glyph;
-		}
-		out += '\n';
-	}
-
-	return out;
-}
-
-std::string SaiAdventureAI::buildPayload(const std::vector<AdventureOption> & options)
-{
-	auto calendar = cb->getCalendar();
-	auto out = std::string("{");
-
-	out += R"("kind":"adventure",)";
-	out += R"("color":")" + JsonEscape(playerID.toString()) + R"(",)";
-	out += boost::str(
-		boost::format(R"("day":%d,"dayOfWeek":%d,"week":%d,"month":%d,)") % calendar.getCurrentDay() % calendar.getDayOfWeek()
-		% calendar.getWeek() % calendar.getMonth()
-	);
-	out += R"("last":")" + JsonEscape(lastResult) + R"(",)";
-
-	out += R"("resources":{)";
-	for(size_t i = 0; i < RESOURCE_NAMES.size(); ++i)
-	{
-		if(i > 0)
-			out += ",";
-		out += R"(")" + std::string(RESOURCE_NAMES[i]) + R"(":)" + std::to_string(cb->getResourceAmount(GameResID(static_cast<int32_t>(i))));
-	}
-	out += "},";
-
-	auto render = std::string();
-
-	out += R"("heroes":[)";
-	auto heroes = cb->getHeroesInfo();
-	for(size_t i = 0; i < heroes.size(); ++i)
-	{
-		const auto * hero = heroes[i];
-		if(i > 0)
-			out += ",";
-		out += boost::str(
-			boost::format(R"({"id":%d,"name":"%s","level":%d,"pos":[%d,%d,%d],"movement":[%d,%d],"mana":[%d,%d],"army":"%s"})")
-			% hero->id.getNum() % JsonEscape(hero->getNameTranslated()) % hero->level % hero->visitablePos().x
-			% hero->visitablePos().y % hero->visitablePos().z % hero->movementPointsRemaining() % hero->movementPointsLimit()
-			% hero->mana % hero->manaLimit() % JsonEscape(ArmyOf(hero))
-		);
-
-		render += boost::str(boost::format("--- around h%d %s %s ---\n") % hero->id.getNum() % hero->getNameTranslated() % Coord(hero->visitablePos()));
-		render += renderAround(hero, VIEW_RADIUS);
-	}
-	out += "],";
-
-	out += R"("towns":[)";
-	auto towns = cb->getTownsInfo();
-	for(size_t i = 0; i < towns.size(); ++i)
-	{
-		const auto * town = towns[i];
-		if(i > 0)
-			out += ",";
-		out += boost::str(
-			boost::format(R"({"id":%d,"name":"%s","pos":[%d,%d,%d],"garrison":"%s"})") % town->id.getNum()
-			% JsonEscape(town->getNameTranslated()) % town->visitablePos().x % town->visitablePos().y % town->visitablePos().z
-			% JsonEscape(ArmyOf(town))
-		);
-	}
-	out += "],";
-
-	out += R"("render":")" + JsonEscape(render) + R"(",)";
-
-	out += R"("options":[)";
-	for(size_t i = 0; i < options.size(); ++i)
-	{
-		if(i > 0)
-			out += ",";
-		out += R"({"idx":)" + std::to_string(i) + R"(,"desc":")" + JsonEscape(options[i].desc) + R"("})";
-	}
-	out += "]}";
-
-	return out;
 }
 
 void SaiAdventureAI::answerLater(QueryID queryID, int reply)
