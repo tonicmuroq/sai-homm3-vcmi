@@ -174,13 +174,15 @@ A decision runs `getAction` **twice**. The first call returns `ACTION_RENDER_ANS
 | `POST /cast` | body is an index into `casts`; casting ends the turn |
 | `POST /option` | body is an index into `options` (adventure map) |
 
-`/state` returns the battlefield render with ANSI escapes stripped, every legal action already decoded, and every legal hero spellcast:
+`/state` returns the battlefield as a structured `stacks` array - both sides, with creature
+name, position, quantity, attack, defense, damage range, HP, speed, ammunition, and the two
+flags that matter, `mine` and `active` - plus every legal action already decoded, and every
+legal hero spellcast:
 
-```json
-{"color":"blue","side":"left","mana":10,"render":"...",
- "legal":[{"action":1,"desc":"WAIT"},{"action":28,"desc":"MOVE hex=1 y=0 x=1"}],
- "casts":[{"idx":0,"spell":"Magic Arrow","mana":5,"hex":[44]}]}
-```
+Actions say what they do rather than where they point: an attack carries the stack it hits
+and `battleEstimateDamage`'s own numbers, and a move onto the acting stack's own hex - which
+is how the engine spells "defend" - is labelled `DEFEND` instead of being one anonymous
+`MOVE` among forty-seven.
 
 `legal` and `casts` are offered **together**, in one round trip, so the agent can weigh casting against moving — that comparison is the whole point of owning spells. Answering with `/action` at such a decision simply means "no spell this turn".
 

@@ -21,6 +21,7 @@
 #include "spells/CSpellHandler.h"
 #include "spells/ISpellMechanics.h"
 
+#include "BAI/sai/sai_battle.h"
 #include "BAI/sai/sai_bridge.h"
 #include "BAI/sai/sai_model.h"
 #include "BAI/sai/sai_payload.h"
@@ -183,32 +184,50 @@ bool BAI::maybeSaiDecide(const CStack * astack, const BattleID & bid)
 	offered.reserve(spells.size());
 	for(size_t i = 0; i < spells.size(); ++i)
 	{
-		auto info = SaiCastInfo{spells[i]->getNameTranslated(), battle->battleGetSpellCost(spells[i], hero), {}};
+		auto info = SaiCastInfo{
+			spells[i]->getNameTranslated(),
+			battle->battleGetSpellCost(spells[i], hero),
+			spells[i]->getLevel(),
+			spells[i]->hasSchool(SpellSchool::AIR) ? "air"
+				: spells[i]->hasSchool(SpellSchool::FIRE) ? "fire"
+				: spells[i]->hasSchool(SpellSchool::WATER) ? "water"
+				: spells[i]->hasSchool(SpellSchool::EARTH) ? "earth" : "none",
+			spells[i]->getDescriptionTranslated(hero->getEffectLevel(spells[i])),
+			{},
+		};
+
 		for(const auto & dest : targets[i])
 		{
-			// BattleHex numbers a 17-wide grid including the two unusable edge columns,
-			// while everything else the agent is shown uses MMAI's 15-wide one. Offering
-			// both numberings for the same tile is how a target gets picked wrong.
-			if(dest.hexValue.isValid())
-				info.hexes.push_back(dest.hexValue.getY() * 15 + dest.hexValue.getX() - 1);
+			if(!dest.hexValue.isValid())
+				continue;
+
+			const auto * occupant = battle->battleGetStackByPos(dest.hexValue, true);
+			info.targets.push_back({SaiHex(dest.hexValue), occupant ? DescribeStack(occupant) : std::string()});
 		}
+
 		offered.push_back(std::move(info));
 	}
 
 	const auto * mask = state->getActionMask();
-	auto legal = std::vector<int>();
+	auto legal = std::vector<SaiActionInfo>();
 	for(auto i = 0; i < static_cast<int>(mask->size()); ++i)
 		if(mask->at(i))
-			legal.push_back(i);
+			legal.push_back({i, DescribeSaiAction(battle.get(), astack, i)});
+
+	auto stacks = std::vector<SaiStackInfo>();
+	for(const auto * unit : battle->battleGetAllStacks(false))
+		stacks.push_back(DescribeSaiStack(unit, astack, battle->battleGetMySide()));
 
 	auto sideName = battle->battleGetMySide() == BattleSide::LEFT_SIDE ? "left" : "right";
 	auto payload = BuildSaiPayload(
 		cb->getPlayerID()->toString(),
 		sideName,
 		renderANSI(),
+		stacks,
 		legal,
 		offered,
-		hero ? hero->mana : 0
+		hero ? hero->mana : 0,
+		hero ? hero->manaLimit() : 0
 	);
 
 	auto decision = SaiBridge::instance().decide(std::move(payload), *mask, static_cast<int>(offered.size()));

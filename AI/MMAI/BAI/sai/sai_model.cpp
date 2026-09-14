@@ -99,7 +99,13 @@ int SaiModel::getAction(const Schema::IState * s)
 	{
 		// Reached only when BAI re-asks after rejecting an action: the decision that
 		// offered spells happened earlier, in BAI::maybeSaiDecide, so no casts here.
-		auto payload = BuildSaiPayload(sup->getColor(), SideName(sup->getSide()), sup->getAnsiRender(), legal, {}, 0);
+		// This path is the re-ask after BAI rejected an action, so the decorated stack
+		// table and spell list from maybeSaiDecide are not available here.
+		auto plain = std::vector<SaiActionInfo>();
+		for(auto action : legal)
+			plain.push_back({action, DescribeAction(action)});
+
+		auto payload = BuildSaiPayload(sup->getColor(), SideName(sup->getSide()), sup->getAnsiRender(), {}, plain, {}, 0, 0);
 		auto decision = SaiBridge::instance().decide(std::move(payload), *mask, 0);
 		logAi->info("SaiModel: Sai chose %d, %s", decision.value, DescribeAction(decision.value));
 		return decision.value;

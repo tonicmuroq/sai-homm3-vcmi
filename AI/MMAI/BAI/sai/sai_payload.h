@@ -15,11 +15,52 @@
 
 namespace MMAI::BAI
 {
+struct SaiStackInfo
+{
+	std::string name;
+	bool mine = false;
+	int slot = 0;
+	int hex = 0;
+	int y = 0;
+	int x = 0;
+	int quantity = 0;
+	int attack = 0;
+	int defense = 0;
+	int dmgMin = 0;
+	int dmgMax = 0;
+	int hp = 0;
+	int hpLeft = 0;
+	int speed = 0;
+	int shots = 0;
+	int queue = 0;
+	int value = 0;
+	bool shooter = false;
+	bool canShootNow = false;
+	bool flying = false;
+	bool active = false;
+	bool waited = false;
+};
+
+struct SaiCastTarget
+{
+	int hex = 0;
+	std::string stack;
+};
+
 struct SaiCastInfo
 {
 	std::string name;
 	int mana = 0;
-	std::vector<int> hexes;
+	int level = 0;
+	std::string school;
+	std::string effect;
+	std::vector<SaiCastTarget> targets;
+};
+
+struct SaiActionInfo
+{
+	int action = 0;
+	std::string desc;
 };
 
 std::string JsonEscape(const std::string & text);
@@ -30,8 +71,10 @@ std::string BuildSaiPayload(
 	const std::string & color,
 	const std::string & side,
 	const std::string & render,
-	const std::vector<int> & legal,
+	const std::vector<SaiStackInfo> & stacks,
+	const std::vector<SaiActionInfo> & legal,
 	const std::vector<SaiCastInfo> & casts,
-	int mana
+	int mana,
+	int manaMax
 );
 }

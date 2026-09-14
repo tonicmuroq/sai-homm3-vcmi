@@ -15,6 +15,8 @@ set(MMAI_FILES
   BAI/fallback/scripted_model.cpp
 
   BAI/sai/sai_adventure.h
+  BAI/sai/sai_battle.h
+  BAI/sai/sai_battle.cpp
   BAI/sai/sai_adventure.cpp
   BAI/sai/sai_bridge.h
   BAI/sai/sai_bridge.cpp

@@ -109,24 +109,49 @@ std::string BuildSaiPayload(
 	const std::string & color,
 	const std::string & side,
 	const std::string & render,
-	const std::vector<int> & legal,
+	const std::vector<SaiStackInfo> & stacks,
+	const std::vector<SaiActionInfo> & legal,
 	const std::vector<SaiCastInfo> & casts,
-	int mana
+	int mana,
+	int manaMax
 )
 {
 	auto out = std::string("{");
 	out += R"("kind":"battle",)";
 	out += R"("color":")" + JsonEscape(color) + R"(",)";
 	out += R"("side":")" + JsonEscape(side) + R"(",)";
-	out += R"("mana":)" + std::to_string(mana) + ",";
-	out += R"("render":")" + JsonEscape(StripAnsi(render)) + R"(",)";
+	out += boost::str(boost::format(R"("mana":%d,"manaMax":%d,)") % mana % manaMax);
+
+	out += R"("stacks":[)";
+	for(size_t i = 0; i < stacks.size(); ++i)
+	{
+		const auto & stack = stacks[i];
+		if(i > 0)
+			out += ",";
+
+		out += boost::str(
+			boost::format(
+				R"({"name":"%s","mine":%s,"slot":%d,"hex":%d,"y":%d,"x":%d,"qty":%d,)"
+				R"("attack":%d,"defense":%d,"dmg":[%d,%d],"hp":%d,"hpLeft":%d,"speed":%d,)"
+				R"("shots":%d,"queue":%d,"value":%d,"shooter":%s,"canShootNow":%s,)"
+				R"("flying":%s,"active":%s,"waited":%s})"
+			)
+			% JsonEscape(stack.name) % (stack.mine ? "true" : "false") % stack.slot % stack.hex % stack.y % stack.x
+			% stack.quantity % stack.attack % stack.defense % stack.dmgMin % stack.dmgMax % stack.hp
+			% stack.hpLeft % stack.speed % stack.shots % stack.queue % stack.value
+			% (stack.shooter ? "true" : "false") % (stack.canShootNow ? "true" : "false")
+			% (stack.flying ? "true" : "false") % (stack.active ? "true" : "false")
+			% (stack.waited ? "true" : "false")
+		);
+	}
+	out += "],";
 
 	out += R"("legal":[)";
 	for(size_t i = 0; i < legal.size(); ++i)
 	{
 		if(i > 0)
 			out += ",";
-		out += R"({"action":)" + std::to_string(legal[i]) + R"(,"desc":")" + JsonEscape(DescribeAction(legal[i])) + R"("})";
+		out += R"({"action":)" + std::to_string(legal[i].action) + R"(,"desc":")" + JsonEscape(legal[i].desc) + R"("})";
 	}
 	out += "],";
 
@@ -135,21 +160,29 @@ std::string BuildSaiPayload(
 	out += R"("casts":[)";
 	for(size_t i = 0; i < casts.size(); ++i)
 	{
+		const auto & cast = casts[i];
 		if(i > 0)
 			out += ",";
-		out += R"({"idx":)" + std::to_string(i);
-		out += R"(,"spell":")" + JsonEscape(casts[i].name) + R"(")";
-		out += R"(,"mana":)" + std::to_string(casts[i].mana);
-		out += R"(,"hex":[)";
-		for(size_t h = 0; h < casts[i].hexes.size(); ++h)
+
+		out += boost::str(
+			boost::format(R"({"idx":%d,"spell":"%s","mana":%d,"level":%d,"school":"%s","effect":"%s","targets":[)")
+			% i % JsonEscape(cast.name) % cast.mana % cast.level % JsonEscape(cast.school) % JsonEscape(cast.effect)
+		);
+
+		for(size_t t = 0; t < cast.targets.size(); ++t)
 		{
-			if(h > 0)
+			if(t > 0)
 				out += ",";
-			out += std::to_string(casts[i].hexes[h]);
+			out += boost::str(
+				boost::format(R"({"hex":%d,"stack":"%s"})") % cast.targets[t].hex % JsonEscape(cast.targets[t].stack)
+			);
 		}
+
 		out += "]}";
 	}
-	out += "]}";
+	out += "],";
+
+	out += R"("render":")" + JsonEscape(StripAnsi(render)) + R"("})";
 
 	return out;
 }
