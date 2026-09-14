@@ -73,6 +73,7 @@
 
 #include "../lib/callback/AIFactory.h"
 #include "../lib/CConfigHandler.h"
+#include "../lib/CSkillHandler.h"
 #include "../lib/GameLibrary.h"
 #include "../lib/texts/CGeneralTextHandler.h"
 #include "../lib/CPlayerState.h"
@@ -505,6 +506,17 @@ void CPlayerInterface::receivedResource()
 void CPlayerInterface::heroGotLevel(const CGHeroInstance *hero, PrimarySkill pskill, std::vector<SecondarySkill>& skills, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(saiPilot && queryID != QueryID::NONE && !skills.empty())
+	{
+		auto choices = std::vector<std::pair<std::string, int>>();
+		for(size_t i = 0; i < skills.size(); ++i)
+			choices.emplace_back(LIBRARY->skillh->getById(skills[i])->getNameTranslated(), static_cast<int>(i));
+
+		saiPilot->ask(hero->getNameTranslated() + " reached a new level, pick a skill", choices, queryID);
+		return;
+	}
+
 	auto availableSkills = skills;
 
 	auto showLevelUpDialog = [this, hero, pskill, availableSkills = std::move(availableSkills), queryID]() mutable
@@ -542,6 +554,17 @@ void CPlayerInterface::heroGotLevel(const CGHeroInstance *hero, PrimarySkill psk
 void CPlayerInterface::commanderGotLevel(const CCommanderInstance * commander, std::vector<ui32> skills, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(saiPilot && queryID != QueryID::NONE && !skills.empty())
+	{
+		auto choices = std::vector<std::pair<std::string, int>>();
+		for(size_t i = 0; i < skills.size(); ++i)
+			choices.emplace_back("commander skill " + std::to_string(skills[i]), static_cast<int>(i));
+
+		saiPilot->ask("Commander reached a new level, pick a skill", choices, queryID);
+		return;
+	}
+
 	auto showCallback = [this, commander, skills = std::move(skills), queryID]() mutable
 	{
 		ENGINE->sound().playSound(soundBase::heroNewLevel);
@@ -1046,7 +1069,7 @@ void CPlayerInterface::showInfoDialog(EInfoWindowMode type, const std::string &t
 		return;
 	}
 
-	if (settings["session"]["autoSkip"].Bool() && !ENGINE->isKeyboardShiftDown())
+	if ((saiPilot || settings["session"]["autoSkip"].Bool()) && !ENGINE->isKeyboardShiftDown())
 	{
 		return;
 	}
@@ -1074,7 +1097,7 @@ void CPlayerInterface::showInfoDialog(const std::string & text, std::shared_ptr<
 void CPlayerInterface::showInfoDialog(const std::string &text, const std::vector<std::shared_ptr<CComponent>> & components, int soundID)
 {
 	LOG_TRACE_PARAMS(logGlobal, "player=%s, text=%s, is GAME->interface()=%d", playerID % text % (this==GAME->interface()));
-	if (settings["session"]["autoSkip"].Bool() && !ENGINE->isKeyboardShiftDown())
+	if ((saiPilot || settings["session"]["autoSkip"].Bool()) && !ENGINE->isKeyboardShiftDown())
 	{
 		return;
 	}
@@ -1135,6 +1158,12 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	movementController->requestMovementAbort();
 	ENGINE->sound().playSound(static_cast<soundBase::soundID>(soundID));
 
+	if(saiPilot)
+	{
+		saiPilot->askBlockingDialog(text, components, askID, selection, cancel);
+		return;
+	}
+
 	if (!selection && cancel) //simple yes/no dialog
 	{
 		if(settings["general"]["enableUiEnhancements"].Bool() && safeToAutoaccept)
@@ -1192,6 +1221,19 @@ void CPlayerInterface::showTeleportDialog(const CGHeroInstance * hero, TeleportC
 void CPlayerInterface::showMapObjectSelectDialog(QueryID askID, const Component & icon, const MetaString & title, const MetaString & description, const std::vector<ObjectInstanceID> & objects)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(saiPilot && !objects.empty())
+	{
+		auto choices = std::vector<std::pair<std::string, int>>();
+		for(size_t i = 0; i < objects.size(); ++i)
+		{
+			const auto * object = cb->getObj(objects[i], false);
+			choices.emplace_back(object ? object->getObjectName() : std::to_string(objects[i].getNum()), static_cast<int>(i));
+		}
+
+		saiPilot->ask(title.toString(), choices, askID);
+		return;
+	}
 
 	std::vector<ObjectInstanceID> objectGuiOrdered = objects;
 
@@ -1336,7 +1378,7 @@ void CPlayerInterface::showGarrisonDialog(const CArmedInstance * up, const CGHer
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	auto onEnd = [this, queryID](){ cb->selectionMade(0, queryID); };
 
-	if (movementController->isHeroMovingThroughGarrison(down, up))
+	if (movementController->isHeroMovingThroughGarrison(down, up) || saiPilot)
 	{
 		onEnd();
 		return;

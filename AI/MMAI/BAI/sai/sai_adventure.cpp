@@ -179,6 +179,24 @@ namespace
 	}
 }
 
+std::string BuildDialogPayload(const std::string & prompt, const std::vector<std::string> & choices)
+{
+	auto out = std::string("{");
+	out += R"("kind":"dialog",)";
+	out += R"("prompt":")" + JsonEscape(prompt) + R"(",)";
+	out += R"("options":[)";
+
+	for(size_t i = 0; i < choices.size(); ++i)
+	{
+		if(i > 0)
+			out += ",";
+		out += R"({"idx":)" + std::to_string(i) + R"(,"desc":")" + JsonEscape(choices[i]) + R"("})";
+	}
+
+	out += "]}";
+	return out;
+}
+
 std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 {
 	const auto * town = cb.getTown(option.target);

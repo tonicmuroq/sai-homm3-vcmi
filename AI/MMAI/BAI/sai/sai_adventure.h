@@ -50,6 +50,8 @@ struct AdventureOption
 // pack that could move a hero, so the caller passes its own rather than keeping a second.
 using PathsFor = std::function<std::shared_ptr<const CPathsInfo>(const CGHeroInstance *)>;
 
+DLL_LINKAGE std::string BuildDialogPayload(const std::string & prompt, const std::vector<std::string> & choices);
+
 DLL_LINKAGE std::string ApplyTownOption(CCallback & cb, const AdventureOption & option);
 
 DLL_LINKAGE std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor);

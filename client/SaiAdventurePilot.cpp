@@ -11,6 +11,7 @@
 #include "SaiAdventurePilot.h"
 
 #include "CPlayerInterface.h"
+#include "widgets/CComponent.h"
 #include "GameEngine.h"
 #include "GameInstance.h"
 #include "adventureMap/AdventureMapInterface.h"
@@ -178,4 +179,57 @@ bool SaiAdventurePilot::waitForMovement()
 		std::this_thread::sleep_for(POLL);
 
 	return true;
+}
+
+void SaiAdventurePilot::ask(const std::string & prompt, const std::vector<std::pair<std::string, int>> & choices, QueryID query)
+{
+	// The query arrives on the pack thread and the turn thread may be parked waiting for
+	// the movement those very packs drive, so the question is asked from a third one.
+	auto cb = owner.cb;
+	std::thread([cb, prompt, choices, query]
+	{
+		setThreadName("SaiAdventurePilot/dialog");
+
+		auto descriptions = std::vector<std::string>();
+		for(const auto & choice : choices)
+			descriptions.push_back(choice.first);
+
+		auto chosen = 0;
+		try
+		{
+			auto payload = MMAI::BAI::BuildDialogPayload(prompt, descriptions);
+			chosen = MMAI::BAI::SaiBridge::instance().decideOption(std::move(payload), static_cast<int>(descriptions.size()));
+		}
+		catch(const std::exception & e)
+		{
+			// The server is holding a query open, so an unanswered one wedges the game -
+			// taking the first choice is worse play but keeps it moving.
+			logGlobal->warn("SaiAdventurePilot: %s, taking the first choice", e.what());
+		}
+
+		logGlobal->info("SaiAdventurePilot: '%s' -> %s", prompt, choices.at(chosen).first);
+		cb->selectionMade(choices.at(chosen).second, query);
+	}).detach();
+}
+
+void SaiAdventurePilot::askBlockingDialog(const std::string & text, const std::vector<Component> & components, QueryID askID, bool selection, bool cancel)
+{
+	auto choices = std::vector<std::pair<std::string, int>>();
+
+	if(selection)
+	{
+		// selectionMade counts components from 1; 0 is the cancel button.
+		for(size_t i = 0; i < components.size(); ++i)
+			choices.emplace_back(std::make_shared<CComponent>(components[i])->getSubtitle(), static_cast<int>(i) + 1);
+
+		if(cancel)
+			choices.emplace_back("CANCEL", 0);
+	}
+	else
+	{
+		choices.emplace_back("YES", 1);
+		choices.emplace_back("NO", 0);
+	}
+
+	ask(text, choices, askID);
 }

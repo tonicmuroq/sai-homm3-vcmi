@@ -67,10 +67,36 @@ The pilot waits while a battle is running, while autocombat is on, and while a d
 up — an adventure decision offered at those moments would leave the agent holding the wrong
 kind of question with the battle queued behind it.
 
-The battle result window is the one dialog the pilot dismisses itself. It carries no
-decision, it appears after every single fight, and waiting for a human to click it would
-stall the agent between battles; `BattleInterface::battleFinished` presses it through
-`dispatchMainThread`, which is the same path a click takes.
+### Dialogs
+
+A dialog is a decision, often the most interesting one on the map, so Sai gets asked rather
+than the player. `CPlayerInterface` diverts them before any window is built:
+
+| | |
+|---|---|
+| `showBlockingDialog` | yes/no, or one option per component plus `CANCEL` |
+| `heroGotLevel` | the offered secondary skills, by name |
+| `commanderGotLevel` | the offered commander skills |
+| `showMapObjectSelectDialog` | the offered objects, by name |
+
+The payload is `kind: "dialog"` with a `prompt` and the same indexed `options`, answered with
+`POST /option`. The question is asked from a third thread: the query arrives on the pack
+thread, and the turn thread may be parked waiting for the movement those very packs drive.
+**A timeout takes the first choice** rather than leaving the query open — an unanswered query
+wedges the game, which is worse than a bad pick.
+
+Three are deliberately not decisions:
+
+- **The battle result window** carries none, and appears after every single fight.
+  `BattleInterface::battleFinished` presses it through `dispatchMainThread`, the same path a
+  click takes.
+- **Modal info windows** ("you found 500 gold") are skipped exactly the way `session.autoSkip`
+  already skips them, Shift-to-see included. The non-blocking info-bar messages still show.
+- **The garrison window** is an arrangement UI with no option list; it is closed. Splitting
+  and moving stacks is simply not modelled yet.
+
+`showTeleportDialog` still goes through `HeroMovementController`, which is movement machinery
+rather than a dialog; picking an exit is not offered to Sai yet.
 
 If the agent does not answer within `VCMI_SAI_TIMEOUT`, the pilot **hands the turn back**
 rather than ending it: the player is sitting in front of a fully working interface and can
