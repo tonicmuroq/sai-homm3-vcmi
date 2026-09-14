@@ -49,14 +49,19 @@ end of `yourTurn`. It runs on its own thread and drives moves through
 animates, objects are visited and dialogs pop up exactly as they always did. The turn ends
 through `AdventureMapInterface::hotkeyEndingTurn`.
 
-Battles are not the pilot's business: turn on **quick combat**
-(`adventure.quickCombat`, or `forceQuickCombat`) and `CPlayerInterface::battleStart` hands
-every battle to `combatAlliedAI`, which is MMAI, which is the same bridge. One agent loop
-therefore plays the whole game.
+Battles come along for free, and they are watched rather than resolved out of sight.
+`BattleInterface`'s constructor engages autocombat once the window exists — the same thing
+pressing the autocombat button does, at the same moment it would take effect — so the battle
+plays out on screen with Sai giving the orders through `combatAlliedAI`, which is MMAI,
+which is the same bridge. One agent loop therefore plays the whole game.
 
 ```json
-{ "ai": { "combatAlliedAI": "MMAI" }, "adventure": { "quickCombat": true } }
+{ "ai": { "combatAlliedAI": "MMAI" } }
 ```
+
+**Leave quick combat off.** It works by having `isAutoFightOn` already true when
+`CClient::battleStarted` runs, which drops the player interfaces and so never builds a
+`BattleInterface` at all (`Client.cpp:446`). That is exactly the visuals we want to keep.
 
 The pilot waits while a battle is running, while autocombat is on, and while a dialog is
 up — an adventure decision offered at those moments would leave the agent holding the wrong

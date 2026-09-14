@@ -26,6 +26,7 @@
 #include "CreatureAnimation.h"
 
 #include "../CPlayerInterface.h"
+#include "../SaiAdventurePilot.h"
 #include "../GameEngine.h"
 #include "../CServerHandler.h"
 #include "../GameInstance.h"
@@ -105,6 +106,15 @@ BattleInterface::BattleInterface(const BattleID & battleID, const CCreatureSet *
 	windowObject->updateQueue();
 
 	playIntroSoundAndUnlockInterface();
+
+	// Sai is handed the battle the way the autocombat button hands it over, and for the
+	// same reason it is done here rather than at battleStart: the window already exists,
+	// so the fight is watched instead of being resolved out of sight like quick combat.
+	if(SaiAdventurePilot::enabled() && (attackerInt || defenderInt) && !curInt->autofightingAI)
+	{
+		windowObject->blockUI(true);
+		curInt->prepareAutoFightingAI(battleID, army1, army2, int3(0, 0, 0), attackingHeroInstance, defendingHeroInstance, getBattle()->battleGetMySide());
+	}
 }
 
 bool BattleInterface::isInTacticsMode()
