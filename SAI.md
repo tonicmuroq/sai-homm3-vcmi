@@ -114,8 +114,14 @@ movement:
   cannot open up an unexplored map
 
 plus, per town, every building `canBuildStructure` reports as `ALLOWED` (which already
-accounts for money, prerequisites and the one-per-day rule) and every dwelling with
-creatures left, capped at what the treasury can pay for — plus `END TURN`. The answer is an
+accounts for money, prerequisites and the one-per-day rule), every dwelling with creatures
+left capped at what the treasury can pay for, and a `TAKE` that empties the garrison into a
+hero standing in the town — plus `END TURN`.
+
+Recruits go onto the visiting hero when there is one, the way a player would buy them, and
+into the garrison otherwise. Without the `TAKE`, troops bought on an earlier visit would sit
+in the town forever: nothing else in the option list can carry them out, and a hero that
+walks away without them loses fights it should win. The answer is an
 index into that list (`POST /option`), so nothing illegal can be posted — the same property `getActionMask` gives the battle side, reconstructed. The
 pathfinder is the client's own `PathfinderCache`, the one behind the move arrows, and the
 engine already invalidates it on every pack that could move a hero.

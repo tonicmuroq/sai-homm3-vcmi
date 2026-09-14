@@ -123,6 +123,22 @@ namespace
 		return out;
 	}
 
+	// Recruits belong wherever the player would have put them: on the hero standing in
+	// the town, if one is, and only otherwise in the garrison.
+	const CArmedInstance * RecruitDestination(const CGTownInstance * town)
+	{
+		if(town->getVisitingHero() != nullptr)
+			return town->getVisitingHero();
+		return town->getUpperArmy();
+	}
+
+	const CGHeroInstance * HeroAtTown(const CGTownInstance * town)
+	{
+		if(town->getVisitingHero() != nullptr)
+			return town->getVisitingHero();
+		return town->getGarrisonHero();
+	}
+
 	void AddTownOptions(CCallback & cb, std::vector<AdventureOption> & options)
 	{
 		auto purse = cb.getResourceAmount();
@@ -131,6 +147,22 @@ namespace
 		{
 			if(town->getTown() == nullptr)
 				continue;
+
+			const auto * hero = HeroAtTown(town);
+
+			// Troops bought on an earlier visit sit in the garrison until somebody carries
+			// them out, and nothing else in the option list can do that.
+			if(hero != nullptr && town->stacksCount() > 0)
+			{
+				options.push_back({
+					boost::str(
+						boost::format("TAKE %s from t%d %s -> h%d") % ArmyOf(town) % town->id.getNum()
+						% town->getNameTranslated() % hero->id.getNum()
+					),
+					AdventureOption::Kind::TakeArmy,
+					town->id,
+				});
+			}
 
 			for(const auto & entry : town->getTown()->buildings)
 			{
@@ -170,9 +202,9 @@ namespace
 
 				auto option = AdventureOption{
 					boost::str(
-						boost::format("RECRUIT %d %s at t%d %s [%d available, %s each]") % amount
+						boost::format("RECRUIT %d %s at t%d %s -> %s [%d available, %s each]") % amount
 						% creature->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
-						% dwelling.first % cost.toString()
+						% (hero != nullptr ? "hero" : "garrison") % dwelling.first % cost.toString()
 					),
 					AdventureOption::Kind::Recruit,
 					town->id,
@@ -216,7 +248,18 @@ std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 		return option.desc + (ok ? ", built" : ", refused by the engine");
 	}
 
-	const auto * destination = town->getUpperArmy();
+	if(option.kind == AdventureOption::Kind::TakeArmy)
+	{
+		const auto * hero = HeroAtTown(town);
+		if(hero == nullptr || town->Slots().empty())
+			return "nothing left to take";
+
+		// bulkMoveArmy moves every stack of the source army, not just the named slot.
+		cb.bulkMoveArmy(town->id, hero->id, town->Slots().begin()->first);
+		return option.desc + ", taken";
+	}
+
+	const auto * destination = RecruitDestination(town);
 	if(destination == nullptr)
 		return "town has nowhere to put the recruits";
 
