@@ -43,6 +43,7 @@ struct AdventureOption
 	int3 dest;
 	BuildingID building;
 	CreatureID creature;
+	SlotID slot;
 	int level = 0;
 	int amount = 0;
 };

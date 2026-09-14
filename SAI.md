@@ -121,7 +121,16 @@ hero standing in the town — plus `END TURN`.
 Recruits go onto the visiting hero when there is one, the way a player would buy them, and
 into the garrison otherwise. Without the `TAKE`, troops bought on an earlier visit would sit
 in the town forever: nothing else in the option list can carry them out, and a hero that
-walks away without them loses fights it should win. The answer is an
+walks away without them loses fights it should win. There is one `TAKE` per stack, not one
+per garrison — a hero has seven slots and most of a garrison is not worth one.
+
+Every creature carries its stats and the engine's own `AIValue`, and every building says what
+it produces, what income it brings and **what it unlocks** — the reverse of `requirements`,
+collected with `LogicalExpression::morph`. Without that last one there is no way to tell a
+prerequisite from a dead end, and an agent buys Crusaders it cannot use instead of the Fort
+that lets it hold the town. (`BuildingID::getLevelIndexFromDwelling` throws on anything that
+is not a dwelling, so the dwelling→creature map is built forwards from the town's own
+creature table instead.) The answer is an
 index into that list (`POST /option`), so nothing illegal can be posted — the same property `getActionMask` gives the battle side, reconstructed. The
 pathfinder is the client's own `PathfinderCache`, the one behind the move arrows, and the
 engine already invalidates it on every pack that could move a hero.

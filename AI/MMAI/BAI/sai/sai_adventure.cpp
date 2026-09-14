@@ -125,18 +125,75 @@ namespace
 
 	// Recruits belong wherever the player would have put them: on the hero standing in
 	// the town, if one is, and only otherwise in the garrison.
-	const CArmedInstance * RecruitDestination(const CGTownInstance * town)
-	{
-		if(town->getVisitingHero() != nullptr)
-			return town->getVisitingHero();
-		return town->getUpperArmy();
-	}
-
 	const CGHeroInstance * HeroAtTown(const CGTownInstance * town)
 	{
 		if(town->getVisitingHero() != nullptr)
 			return town->getVisitingHero();
 		return town->getGarrisonHero();
+	}
+
+	std::string Describe(const CCreature * creature)
+	{
+		return boost::str(
+			boost::format("tier %d, att %d def %d, hp %d, dmg %d-%d, speed %d, value %d") % creature->getLevel()
+			% creature->getBaseAttack() % creature->getBaseDefense() % creature->getMaxHealth()
+			% creature->getBaseDamageMin() % creature->getBaseDamageMax() % creature->getMovementRange()
+			% creature->getAIValue()
+		);
+	}
+
+	// BuildingID::getLevelIndexFromDwelling throws on anything that is not a dwelling, so
+	// the mapping is built forwards from the town's own creature table instead.
+	std::map<BuildingID, CreatureID> DwellingCreatures(const CGTownInstance * town)
+	{
+		auto dwellings = std::map<BuildingID, CreatureID>();
+
+		for(size_t level = 0; level < town->creatures.size(); ++level)
+		{
+			const auto & alternatives = town->creatures[level].second;
+			for(size_t upgrade = 0; upgrade < alternatives.size(); ++upgrade)
+			{
+				auto id = BuildingID::getDwellingFromLevel(static_cast<int>(level), static_cast<int>(upgrade));
+				if(id != BuildingID::NONE)
+					dwellings[id] = alternatives[upgrade];
+			}
+		}
+
+		return dwellings;
+	}
+
+	// What a building leads to is the part that decides whether it is worth paying for, and
+	// nothing else in the payload says it.
+	std::map<BuildingID, std::vector<std::string>> Unlocks(const CTown * town)
+	{
+		auto unlocks = std::map<BuildingID, std::vector<std::string>>();
+
+		for(const auto & entry : town->buildings)
+		{
+			auto name = entry.second->getNameTranslated();
+
+			entry.second->requirements.morph([&](const BuildingID & required) {
+				unlocks[required].push_back(name);
+				return CBuilding::TRequired::Variant(required);
+			});
+
+			if(entry.second->upgrade != BuildingID::NONE)
+				unlocks[entry.second->upgrade].push_back(name);
+		}
+
+		return unlocks;
+	}
+
+	std::string Joined(const std::vector<std::string> & parts)
+	{
+		auto out = std::string();
+		for(const auto & part : parts)
+		{
+			if(!out.empty())
+				out += ", ";
+			out += part;
+		}
+		return out;
 	}
 
 	void AddTownOptions(CCallback & cb, std::vector<AdventureOption> & options)
@@ -149,19 +206,32 @@ namespace
 				continue;
 
 			const auto * hero = HeroAtTown(town);
+			auto dwellings = DwellingCreatures(town);
+			auto unlocks = Unlocks(town->getTown());
 
 			// Troops bought on an earlier visit sit in the garrison until somebody carries
-			// them out, and nothing else in the option list can do that.
-			if(hero != nullptr && town->stacksCount() > 0)
+			// them out, and nothing else in the option list can do that. One option per
+			// stack, because most of a garrison is usually not worth the movement.
+			if(hero != nullptr)
 			{
-				options.push_back({
-					boost::str(
-						boost::format("TAKE %s from t%d %s -> h%d") % ArmyOf(town) % town->id.getNum()
-						% town->getNameTranslated() % hero->id.getNum()
-					),
-					AdventureOption::Kind::TakeArmy,
-					town->id,
-				});
+				for(const auto & slot : town->Slots())
+				{
+					const auto * creature = town->getCreature(slot.first);
+					if(creature == nullptr)
+						continue;
+
+					auto option = AdventureOption{
+						boost::str(
+							boost::format("TAKE %d %s from t%d %s -> h%d [%s]") % town->getStackCount(slot.first)
+							% creature->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
+							% hero->id.getNum() % Describe(creature)
+						),
+						AdventureOption::Kind::TakeArmy,
+						town->id,
+					};
+					option.slot = slot.first;
+					options.push_back(option);
+				}
 			}
 
 			for(const auto & entry : town->getTown()->buildings)
@@ -170,10 +240,24 @@ namespace
 				if(cb.canBuildStructure(town, entry.first) != EBuildingState::ALLOWED)
 					continue;
 
+				auto note = std::string();
+
+				auto dwelling = dwellings.find(entry.first);
+				if(dwelling != dwellings.end() && dwelling->second.toCreature() != nullptr)
+					note += " dwelling: " + dwelling->second.toCreature()->getNamePluralTranslated()
+						+ " (" + Describe(dwelling->second.toCreature()) + ")";
+
+				if(entry.second->produce.nonZero())
+					note += " income " + entry.second->produce.toString();
+
+				auto unlocked = unlocks.find(entry.first);
+				if(unlocked != unlocks.end())
+					note += " unlocks: " + Joined(unlocked->second);
+
 				options.push_back({
 					boost::str(
-						boost::format("BUILD %s at t%d %s [%s]") % entry.second->getNameTranslated() % town->id.getNum()
-						% town->getNameTranslated() % entry.second->resources.toString()
+						boost::format("BUILD %s at t%d %s [%s]%s") % entry.second->getNameTranslated()
+						% town->id.getNum() % town->getNameTranslated() % entry.second->resources.toString() % note
 					),
 					AdventureOption::Kind::Build,
 					town->id,
@@ -202,9 +286,10 @@ namespace
 
 				auto option = AdventureOption{
 					boost::str(
-						boost::format("RECRUIT %d %s at t%d %s -> %s [%d available, %s each]") % amount
+						boost::format("RECRUIT %d %s at t%d %s -> %s [%d available, %s each] %s") % amount
 						% creature->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
 						% (hero != nullptr ? "hero" : "garrison") % dwelling.first % cost.toString()
+						% Describe(creature)
 					),
 					AdventureOption::Kind::Recruit,
 					town->id,
@@ -251,15 +336,21 @@ std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 	if(option.kind == AdventureOption::Kind::TakeArmy)
 	{
 		const auto * hero = HeroAtTown(town);
-		if(hero == nullptr || town->Slots().empty())
+		const auto * creature = town->getCreature(option.slot);
+		if(hero == nullptr || creature == nullptr)
 			return "nothing left to take";
 
-		// bulkMoveArmy moves every stack of the source army, not just the named slot.
-		cb.bulkMoveArmy(town->id, hero->id, town->Slots().begin()->first);
+		auto destination = hero->getSlotFor(creature);
+		if(!destination.validSlot())
+			return option.desc + ", but the hero has no room";
+
+		cb.mergeOrSwapStacks(town, hero, option.slot, destination);
 		return option.desc + ", taken";
 	}
 
-	const auto * destination = RecruitDestination(town);
+	const auto * destination = HeroAtTown(town) != nullptr
+		? static_cast<const CArmedInstance *>(HeroAtTown(town))
+		: town->getUpperArmy();
 	if(destination == nullptr)
 		return "town has nowhere to put the recruits";
 
