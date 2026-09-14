@@ -124,6 +124,17 @@ in the town forever: nothing else in the option list can carry them out, and a h
 walks away without them loses fights it should win. There is one `TAKE` per stack, not one
 per garrison — a hero has seven slots and most of a garrison is not worth one.
 
+Recruiting always buys the best version a town can produce, so an army fills with several
+generations of the same unit in separate slots, and a hero only has seven. `UPGRADE` (through
+`fillUpgradeInfo` + `upgradeCreature`) and `MERGE` (`bulkMergeStacks`) are offered for every
+army, town and hero alike; they only merge once they are the same creature, so the order
+matters. A `RECRUIT` or `TAKE` into a full army is left out of the list rather than offered
+and refused.
+
+**`canBuildStructure` does not look at `CBuilding::mode`.** Grail, special and automatic
+buildings pass it and are then refused by the server with `Cannot build this without grail!`,
+so the mode is filtered here.
+
 Every creature carries its stats and the engine's own `AIValue`, and every building says what
 it produces, what income it brings and **what it unlocks** — the reverse of `requirements`,
 collected with `LogicalExpression::morph`. Without that last one there is no way to tell a

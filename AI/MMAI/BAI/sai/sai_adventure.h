@@ -34,6 +34,8 @@ struct AdventureOption
 		Build,
 		Recruit,
 		TakeArmy,
+		Upgrade,
+		Merge,
 		EndTurn,
 	};
 

@@ -21,6 +21,7 @@
 #include "../../../../lib/entities/faction/CTown.h"
 #include "../../../../lib/mapObjects/CGTownInstance.h"
 #include "../../../../lib/mapObjects/army/CCreatureSet.h"
+#include "../../../../lib/gameState/UpgradeInfo.h"
 #include "../../../../lib/mapping/TerrainTile.h"
 #include "../../../../lib/pathfinder/CGPathNode.h"
 #include "../../../../lib/pathfinder/PathfinderCache.h"
@@ -184,6 +185,71 @@ namespace
 		return unlocks;
 	}
 
+	const CArmedInstance * ArmyAt(CCallback & cb, const ObjectInstanceID & id)
+	{
+		return dynamic_cast<const CArmedInstance *>(cb.getObj(id, false));
+	}
+
+	// Recruiting the best available upgrade means an army slowly fills with several
+	// versions of the same unit, and those cannot merge until the old ones are upgraded.
+	void AddArmyOptions(CCallback & cb, const CArmedInstance * army, const std::string & where, std::vector<AdventureOption> & options)
+	{
+		auto purse = cb.getResourceAmount();
+		auto seen = std::map<CreatureID, SlotID>();
+
+		for(const auto & slot : army->Slots())
+		{
+			const auto * creature = army->getCreature(slot.first);
+			if(creature == nullptr)
+				continue;
+
+			auto previous = seen.find(creature->getId());
+			if(previous == seen.end())
+			{
+				seen[creature->getId()] = slot.first;
+			}
+			else
+			{
+				auto option = AdventureOption{
+					boost::str(
+						boost::format("MERGE %s stacks at %s") % creature->getNamePluralTranslated() % where
+					),
+					AdventureOption::Kind::Merge,
+					army->id,
+				};
+				option.slot = previous->second;
+				options.push_back(option);
+			}
+
+			auto upgrades = UpgradeInfo(creature->getId());
+			cb.fillUpgradeInfo(army, slot.first, upgrades);
+
+			for(const auto & id : upgrades.getAvailableUpgrades())
+			{
+				const auto * upgraded = id.toCreature();
+				if(upgraded == nullptr)
+					continue;
+
+				auto cost = upgrades.getUpgradeCostsFor(id) * army->getStackCount(slot.first);
+				if(!purse.canAfford(cost))
+					continue;
+
+				auto option = AdventureOption{
+					boost::str(
+						boost::format("UPGRADE %d %s -> %s at %s [%s] %s") % army->getStackCount(slot.first)
+						% creature->getNamePluralTranslated() % upgraded->getNamePluralTranslated() % where
+						% cost.toString() % Describe(upgraded)
+					),
+					AdventureOption::Kind::Upgrade,
+					army->id,
+				};
+				option.slot = slot.first;
+				option.creature = id;
+				options.push_back(option);
+			}
+		}
+	}
+
 	std::string Joined(const std::vector<std::string> & parts)
 	{
 		auto out = std::string();
@@ -209,6 +275,8 @@ namespace
 			auto dwellings = DwellingCreatures(town);
 			auto unlocks = Unlocks(town->getTown());
 
+			AddArmyOptions(cb, town, boost::str(boost::format("t%d %s") % town->id.getNum() % town->getNameTranslated()), options);
+
 			// Troops bought on an earlier visit sit in the garrison until somebody carries
 			// them out, and nothing else in the option list can do that. One option per
 			// stack, because most of a garrison is usually not worth the movement.
@@ -217,7 +285,7 @@ namespace
 				for(const auto & slot : town->Slots())
 				{
 					const auto * creature = town->getCreature(slot.first);
-					if(creature == nullptr)
+					if(creature == nullptr || !hero->getSlotFor(creature).validSlot())
 						continue;
 
 					auto option = AdventureOption{
@@ -236,6 +304,11 @@ namespace
 
 			for(const auto & entry : town->getTown()->buildings)
 			{
+				// canBuildStructure does not look at mode: grail, special and automatic
+				// buildings pass it and are then refused by the server.
+				if(entry.second->mode != CBuilding::BUILD_NORMAL)
+					continue;
+
 				// ALLOWED already accounts for money, prerequisites and the one-per-day rule.
 				if(cb.canBuildStructure(town, entry.first) != EBuildingState::ALLOWED)
 					continue;
@@ -281,7 +354,12 @@ namespace
 				auto cost = creature->getFullRecruitCost();
 				auto amount = std::min<int>(dwelling.first, purse / cost);
 
-				if(amount <= 0)
+				// A full army refuses the purchase server-side, so do not offer it.
+				const auto * destination = hero != nullptr
+					? static_cast<const CArmedInstance *>(hero)
+					: town->getUpperArmy();
+
+				if(amount <= 0 || destination == nullptr || !destination->getSlotFor(creature).validSlot())
 					continue;
 
 				auto option = AdventureOption{
@@ -323,6 +401,22 @@ std::string BuildDialogPayload(const std::string & prompt, const std::vector<std
 
 std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 {
+	// An upgrade or a merge can target a hero's army as easily as a town's, so it is
+	// resolved before the town lookup rather than through it.
+	if(option.kind == AdventureOption::Kind::Upgrade || option.kind == AdventureOption::Kind::Merge)
+	{
+		const auto * army = ArmyAt(cb, option.target);
+		if(army == nullptr || army->getCreature(option.slot) == nullptr)
+			return "that stack is gone";
+
+		if(option.kind == AdventureOption::Kind::Merge)
+			cb.bulkMergeStacks(army->id, option.slot);
+		else
+			cb.upgradeCreature(army, option.slot, option.creature);
+
+		return option.desc + ", done";
+	}
+
 	const auto * town = cb.getTown(option.target);
 	if(town == nullptr)
 		return "town is gone";
@@ -442,6 +536,9 @@ std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFo
 			});
 		}
 	}
+
+	for(const auto * hero : cb.getHeroesInfo())
+		AddArmyOptions(cb, hero, boost::str(boost::format("h%d %s") % hero->id.getNum() % hero->getNameTranslated()), options);
 
 	AddTownOptions(cb, options);
 
