@@ -185,8 +185,13 @@ bool BAI::maybeSaiDecide(const CStack * astack, const BattleID & bid)
 	{
 		auto info = SaiCastInfo{spells[i]->getNameTranslated(), battle->battleGetSpellCost(spells[i], hero), {}};
 		for(const auto & dest : targets[i])
+		{
+			// BattleHex numbers a 17-wide grid including the two unusable edge columns,
+			// while everything else the agent is shown uses MMAI's 15-wide one. Offering
+			// both numberings for the same tile is how a target gets picked wrong.
 			if(dest.hexValue.isValid())
-				info.hexes.push_back(dest.hexValue.toInt());
+				info.hexes.push_back(dest.hexValue.getY() * 15 + dest.hexValue.getX() - 1);
+		}
 		offered.push_back(std::move(info));
 	}
 

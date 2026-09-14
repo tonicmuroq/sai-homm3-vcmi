@@ -158,6 +158,8 @@ A decision runs `getAction` **twice**. The first call returns `ACTION_RENDER_ANS
 
 `legal` and `casts` are offered **together**, in one round trip, so the agent can weigh casting against moving — that comparison is the whole point of owning spells. Answering with `/action` at such a decision simply means "no spell this turn".
 
+`casts[].hex` uses the same 15-wide numbering as `legal[].desc`, so a spell target and a move target that name the same hex carry the same number. (`BattleHex` itself numbers a 17-wide grid including the two unusable edge columns; it is converted on the way out.)
+
 `casts` is addressed by index because `spells::Target` holds a raw `Unit *` and cannot be rebuilt from JSON; the engine-side list stays server-side. It is enumerated the same way BattleAI does it (`CSpell::canBeCast` then `SpellTargetEvaluator::getViableTargets`), so mana, per-turn limits and immunities are already accounted for — an offered cast will go through.
 
 With no agent attached, or with `battle.enableAutocombatSpells` off, spell choice reverts to BattleAI's heuristic.
