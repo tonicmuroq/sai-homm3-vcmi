@@ -71,6 +71,22 @@ void SaiAdventurePilot::startTurn()
 
 void SaiAdventurePilot::run()
 {
+	// This is a thread entry point: anything that escapes here takes the whole process
+	// down with no dump and no log line, which is how a null town read once looked like
+	// the game simply vanishing.
+	try
+	{
+		play();
+	}
+	catch(const std::exception & e)
+	{
+		logGlobal->error("SaiAdventurePilot: %s, handing the turn back", e.what());
+		running = false;
+	}
+}
+
+void SaiAdventurePilot::play()
+{
 	auto pathsFor = [this](const CGHeroInstance * hero) { return owner.getPathsInfo(hero); };
 
 	for(int decision = 0; decision < MAX_DECISIONS_PER_TURN && running && owner.makingTurn; ++decision)
@@ -124,6 +140,7 @@ void SaiAdventurePilot::execute(const MMAI::BAI::AdventureOption & option)
 		// Town orders are plain callback sends with no animation to wait on; the short
 		// settle is so the next decision is not offered the same build twice.
 		lastResult = MMAI::BAI::ApplyTownOption(*owner.cb, option);
+		logGlobal->info("SaiAdventurePilot: %s", lastResult);
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 		return;
 	}
@@ -208,7 +225,15 @@ void SaiAdventurePilot::ask(const std::string & prompt, const std::vector<std::p
 		}
 
 		logGlobal->info("SaiAdventurePilot: '%s' -> %s", prompt, choices.at(chosen).first);
-		cb->selectionMade(choices.at(chosen).second, query);
+
+		try
+		{
+			cb->selectionMade(choices.at(chosen).second, query);
+		}
+		catch(const std::exception & e)
+		{
+			logGlobal->error("SaiAdventurePilot: answering the query failed: %s", e.what());
+		}
 	}).detach();
 }
 

@@ -36,6 +36,7 @@ class SaiAdventurePilot
 	std::string lastResult;
 
 	void run();
+	void play();
 	void execute(const MMAI::BAI::AdventureOption & option);
 	bool waitForMovement();
 

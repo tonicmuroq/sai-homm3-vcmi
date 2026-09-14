@@ -129,6 +129,9 @@ namespace
 
 		for(const auto * town : cb.getTownsInfo())
 		{
+			if(town->getTown() == nullptr)
+				continue;
+
 			for(const auto & entry : town->getTown()->buildings)
 			{
 				// ALLOWED already accounts for money, prerequisites and the one-per-day rule.
@@ -155,7 +158,11 @@ namespace
 
 				// The last entry is the best upgrade the town has built.
 				auto id = dwelling.second.back();
-				auto cost = id.toCreature()->getFullRecruitCost();
+				const auto * creature = id.toCreature();
+				if(creature == nullptr)
+					continue;
+
+				auto cost = creature->getFullRecruitCost();
 				auto amount = std::min<int>(dwelling.first, purse / cost);
 
 				if(amount <= 0)
@@ -164,7 +171,7 @@ namespace
 				auto option = AdventureOption{
 					boost::str(
 						boost::format("RECRUIT %d %s at t%d %s [%d available, %s each]") % amount
-						% id.toCreature()->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
+						% creature->getNamePluralTranslated() % town->id.getNum() % town->getNameTranslated()
 						% dwelling.first % cost.toString()
 					),
 					AdventureOption::Kind::Recruit,
@@ -205,12 +212,16 @@ std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 
 	if(option.kind == AdventureOption::Kind::Build)
 	{
-		cb.buildBuilding(town, option.building);
-		return option.desc + ", requested";
+		auto ok = cb.buildBuilding(town, option.building);
+		return option.desc + (ok ? ", built" : ", refused by the engine");
 	}
 
-	cb.recruitCreatures(town, town->getUpperArmy(), option.creature, option.amount, option.level);
-	return option.desc + ", requested";
+	const auto * destination = town->getUpperArmy();
+	if(destination == nullptr)
+		return "town has nowhere to put the recruits";
+
+	cb.recruitCreatures(town, destination, option.creature, option.amount, option.level);
+	return option.desc + ", recruited";
 }
 
 std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFor & pathsFor)
