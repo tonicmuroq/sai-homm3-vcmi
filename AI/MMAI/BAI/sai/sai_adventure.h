@@ -36,6 +36,7 @@ struct AdventureOption
 		TakeArmy,
 		Upgrade,
 		Merge,
+		HireHero,
 		EndTurn,
 	};
 
@@ -45,6 +46,7 @@ struct AdventureOption
 	int3 dest;
 	BuildingID building;
 	CreatureID creature;
+	HeroTypeID heroType;
 	SlotID slot;
 	int level = 0;
 	int amount = 0;

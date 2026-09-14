@@ -11,6 +11,8 @@
 #include "StdInc.h"
 
 #include "../../../../lib/CCreatureHandler.h"
+#include "../../../../lib/IGameSettings.h"
+#include "../../../../lib/constants/NumericConstants.h"
 #include "../../../../lib/CThreadHelper.h"
 #include "../../../../lib/ResourceSet.h"
 #include "../../../../lib/battle/BattleAction.h"
@@ -52,6 +54,17 @@ namespace
 	std::string Coord(const int3 & pos)
 	{
 		return boost::str(boost::format("(%d,%d,%d)") % pos.x % pos.y % pos.z);
+	}
+
+	// getHoverText is what the player would read standing next to it: a guard's strength
+	// as the fuzzy count H3 shows, not the exact number nobody is supposed to know.
+	std::string Describe(CCallback & cb, const CGObjectInstance * obj)
+	{
+		auto text = obj->getHoverText(*cb.getPlayerID());
+		std::replace(text.begin(), text.end(), '\n', ' ');
+		std::replace(text.begin(), text.end(), '\r', ' ');
+
+		return text.empty() ? obj->getObjectName() : text;
 	}
 
 	std::string ArmyOf(const CArmedInstance * army)
@@ -262,6 +275,43 @@ namespace
 		return out;
 	}
 
+	// Losing your last hero is not the end of the game, but without this option it is:
+	// nothing else on the list can move, explore or fight.
+	void AddHireOptions(CCallback & cb, const CGTownInstance * town, std::vector<AdventureOption> & options)
+	{
+		auto player = *cb.getPlayerID();
+
+		if(!town->hasBuilt(BuildingID::TAVERN) || town->getVisitingHero() != nullptr)
+			return;
+
+		if(cb.getResourceAmount(EGameResID::GOLD) < GameConstants::HERO_GOLD_COST)
+			return;
+
+		if(cb.getHeroCount(player, false) >= cb.getSettings().getInteger(EGameSettings::HEROES_PER_PLAYER_ON_MAP_CAP))
+			return;
+
+		if(cb.getHeroCount(player, true) >= cb.getSettings().getInteger(EGameSettings::HEROES_PER_PLAYER_TOTAL_CAP))
+			return;
+
+		for(const auto * hero : cb.getAvailableHeroes(town))
+		{
+			if(hero == nullptr)
+				continue;
+
+			auto option = AdventureOption{
+				boost::str(
+					boost::format("HIRE %s (level %d, %s) at t%d %s [%d gold]") % hero->getNameTranslated()
+					% hero->level % ArmyOf(hero) % town->id.getNum() % town->getNameTranslated()
+					% GameConstants::HERO_GOLD_COST
+				),
+				AdventureOption::Kind::HireHero,
+				town->id,
+			};
+			option.heroType = hero->getHeroTypeID();
+			options.push_back(option);
+		}
+	}
+
 	void AddTownOptions(CCallback & cb, std::vector<AdventureOption> & options)
 	{
 		auto purse = cb.getResourceAmount();
@@ -276,6 +326,7 @@ namespace
 			auto unlocks = Unlocks(town->getTown());
 
 			AddArmyOptions(cb, town, boost::str(boost::format("t%d %s") % town->id.getNum() % town->getNameTranslated()), options);
+			AddHireOptions(cb, town, options);
 
 			// Troops bought on an earlier visit sit in the garrison until somebody carries
 			// them out, and nothing else in the option list can do that. One option per
@@ -421,6 +472,20 @@ std::string ApplyTownOption(CCallback & cb, const AdventureOption & option)
 	if(town == nullptr)
 		return "town is gone";
 
+	if(option.kind == AdventureOption::Kind::HireHero)
+	{
+		for(const auto * hero : cb.getAvailableHeroes(town))
+		{
+			if(hero != nullptr && hero->getHeroTypeID() == option.heroType)
+			{
+				cb.recruitHero(town, hero);
+				return option.desc + ", hired";
+			}
+		}
+
+		return "that hero is no longer in the tavern";
+	}
+
 	if(option.kind == AdventureOption::Kind::Build)
 	{
 		auto ok = cb.buildBuilding(town, option.building);
@@ -479,7 +544,7 @@ std::vector<AdventureOption> BuildAdventureOptions(CCallback & cb, const PathsFo
 			options.push_back({
 				boost::str(
 					boost::format("MOVE h%d -> %s %s [%d mp left]") % hero->id.getNum() % Coord(dest)
-					% obj->getObjectName() % node->moveRemains
+					% Describe(cb, obj) % node->moveRemains
 				),
 				AdventureOption::Kind::Move,
 				hero->id,

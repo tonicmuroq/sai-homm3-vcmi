@@ -124,6 +124,14 @@ in the town forever: nothing else in the option list can carry them out, and a h
 walks away without them loses fights it should win. There is one `TAKE` per stack, not one
 per garrison — a hero has seven slots and most of a garrison is not worth one.
 
+Losing the last hero used to be terminal for the agent rather than for the game: nothing on
+the option list could move, explore or fight, so the turns just went by. `HIRE` mirrors every
+check `HeroPoolProcessor::hireHero` makes - tavern built, nobody visiting, under both hero
+caps, 2500 gold - so it appears exactly when it would succeed.
+
+A move onto an object names it with `getHoverText`, which is the fuzzy strength a player
+reads on hover rather than the exact count nobody is meant to know.
+
 Recruiting always buys the best version a town can produce, so an army fills with several
 generations of the same unit in separate slots, and a hero only has seven. `UPGRADE` (through
 `fillUpgradeInfo` + `upgradeCreature`) and `MERGE` (`bulkMergeStacks`) are offered for every
