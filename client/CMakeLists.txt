@@ -196,6 +196,11 @@ set(vcmiclientcommon_SRCS
 	ClientCommandManager.cpp
 	GameChatHandler.cpp
 	HeroMovementController.cpp
+	sai/SaiAgent.cpp
+	sai/SaiBattle.cpp
+	sai/SaiPlayerInterface.cpp
+	sai/SaiServer.cpp
+	sai/SaiView.cpp
 	NetPacksClient.cpp
 	NetPacksLobbyClient.cpp
 	ServerRunner.cpp
@@ -425,6 +430,11 @@ set(vcmiclientcommon_HEADERS
 	ClientCommandManager.h
 	ClientNetPackVisitors.h
 	HeroMovementController.h
+	sai/SaiAgent.h
+	sai/SaiBattle.h
+	sai/SaiPlayerInterface.h
+	sai/SaiServer.h
+	sai/SaiView.h
 	GameChatHandler.h
 	LobbyClientNetPackVisitors.h
 	ServerRunner.h

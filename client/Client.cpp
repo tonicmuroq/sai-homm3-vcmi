@@ -12,6 +12,7 @@
 #include "Client.h"
 
 #include "CPlayerInterface.h"
+#include "sai/SaiPlayerInterface.h"
 #include "PlayerLocalState.h"
 #include "CServerHandler.h"
 #include "ClientNetPackVisitors.h"
@@ -245,7 +246,7 @@ void CClient::initPlayerInterfaces()
 			else
 			{
 				logNetwork->info("Player %s will be lead by human", color.toString());
-				installNewPlayerInterface(std::make_shared<CPlayerInterface>(color), color);
+				installNewPlayerInterface(sai::MakePlayerInterface(color), color);
 			}
 		}
 	}
@@ -443,7 +444,7 @@ void CClient::toggleAiSolo(EAiSoloMode mode, bool ownVision)
 		PlayerColor turnOwner = humanPlayers.front();
 		for(const auto & color : humanPlayers)
 		{
-			installNewPlayerInterface(std::make_shared<CPlayerInterface>(color), color);
+			installNewPlayerInterface(sai::MakePlayerInterface(color), color);
 
 			if(gameState().actingPlayers.count(color))
 				turnOwner = color;
