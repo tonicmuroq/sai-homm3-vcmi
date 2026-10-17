@@ -281,8 +281,11 @@ void SaiPlayerInterface::showBlockingDialog(const std::string & text, const std:
 
 	auto dialog = std::optional<Dialog>();
 	if(selection && components.size() <= SELECTABLE_BY_KEY)
-		dialog = Dialog{&OnTop<CSelWindow>, [](int32_t reply) {
-			return reply == 0 ? std::vector<EShortcut>{EShortcut::GLOBAL_CANCEL} : SelectAndAccept(reply - 1);
+		dialog = Dialog{&OnTop<CSelWindow>, [cancel](int32_t reply) {
+			if(reply == 0)
+				return std::vector<EShortcut>{EShortcut::GLOBAL_CANCEL};
+			// A lone OK button is bound to Return, not Accept.
+			return std::vector<EShortcut>{vstd::next(EShortcut::SELECT_INDEX_1, reply - 1), cancel ? EShortcut::GLOBAL_ACCEPT : EShortcut::GLOBAL_RETURN};
 		}};
 	else if(!selection && cancel)
 		dialog = Dialog{[] {

@@ -19,6 +19,7 @@
 #include "../widgets/Buttons.h"
 #include "../windows/CCastleInterface.h"
 #include "../windows/CHeroWindow.h"
+#include "../windows/GUIClasses.h"
 #include "../windows/InfoWindows.h"
 
 #include "../../lib/CThreadHelper.h"
@@ -114,11 +115,13 @@ void Stage::pause() const
 
 void Stage::closeScreensNow() const
 {
-	// The adventure map is not a WindowBase, so this stops there; the cap guards against a window that refuses to close.
+	// Only screens a player browses are closed; a dialog may still be waiting for its answer.
 	for(int i = 0; i < 10; ++i)
 	{
 		auto top = ENGINE->windows().topWindow<WindowBase>();
-		if(!top)
+		auto isScreen = std::dynamic_pointer_cast<CCastleInterface>(top) || std::dynamic_pointer_cast<CHeroWindow>(top) || std::dynamic_pointer_cast<CHillFortWindow>(top)
+			|| std::dynamic_pointer_cast<CThievesGuildWindow>(top) || std::dynamic_pointer_cast<CShipyardWindow>(top);
+		if(!isScreen)
 			return;
 		top->close();
 	}

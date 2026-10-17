@@ -418,6 +418,12 @@ std::optional<Complaint> Agent::answerOnScreen(const Question & pending, int32_t
 		if(!stage.type(*pending.dialog, keys[i], tracking))
 			return Complaint("another window covered the dialog; answer again");
 	}
+	{
+		auto lock = std::lock_guard(mutex);
+		// Every dialog answers the server when it closes; no request means the keys missed.
+		if(sentRequests.empty())
+			return std::nullopt;
+	}
 	return awaitRequests(previousQuestion);
 }
 
@@ -650,7 +656,7 @@ JsonNode Agent::answer(const JsonNode & cmd)
 	if(!complaint)
 	{
 		if(pending->dialog)
-			logGlobal->warn("sai_dialog_not_shown, kind=%s", kind);
+			logGlobal->warn("sai_dialog_not_answered_on_screen, kind=%s", kind);
 		complaint = submit([&] {
 			if(kind == "select_object")
 				owner.cb->sendQuestionAnswer(reply < 0 ? std::nullopt : std::optional<int32_t>(reply), pending->id);
