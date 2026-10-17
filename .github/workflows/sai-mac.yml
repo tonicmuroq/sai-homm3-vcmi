@@ -1,0 +1,83 @@
+name: SAI Mac Build
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - sai
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Build macOS arm64
+    runs-on: macos-26
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      preset: macos-arm-conan-ninja-release
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Prepare CI
+      run: source "$GITHUB_WORKSPACE/CI/before_install/macos.sh"
+
+    - name: Install Conan dependencies
+      run: |
+        pipx install conan
+        source "$GITHUB_WORKSPACE/CI/install_conan_dependencies.sh" dependencies-mac-arm
+
+    - name: Install Conan profile
+      run: |
+        conan profile detect
+        conan install . \
+          --output-folder=conan-generated \
+          --build=never \
+          --profile=dependencies/conan_profiles/macos-arm \
+          --conf="tools.cmake.cmaketoolchain:generator=Ninja" \
+          --profile=dependencies/conan_profiles/base/apple-system
+
+    - name: Build Number
+      run: |
+        source "$GITHUB_WORKSPACE/CI/get_package_name.sh"
+        echo VCMI_PACKAGE_FILE_NAME="$VCMI_PACKAGE_FILE_NAME-arm" >> $GITHUB_ENV
+        echo VCMI_PACKAGE_BUILD="$VCMI_PACKAGE_BUILD" >> $GITHUB_ENV
+        echo VCMI_PACKAGE_NAME_SUFFIX="$VCMI_PACKAGE_NAME_SUFFIX" >> $GITHUB_ENV
+        echo VCMI_PACKAGE_GOLDMASTER="$VCMI_PACKAGE_GOLDMASTER" >> $GITHUB_ENV
+
+    - name: Configure
+      run: cmake --preset "$preset"
+
+    - name: Build
+      run: cmake --build --preset "$preset"
+
+    # https://github.com/actions/runner-images/issues/7522 - XProtect makes hdiutil fail
+    - name: Kill XProtect to work around CPack issue on macOS
+      run: |
+        echo Killing...; sudo pkill -9 XProtect >/dev/null || true
+        echo "Waiting..."; counter=0; while pgrep XProtect && ((counter < 20)); do sleep 3; ((counter++)); done
+        pgrep XProtect || true
+
+    - name: Pack
+      run: |
+        cd "out/build/$preset"
+        counter=1
+        until cpack -C Release || ((counter > 10)); do
+          sleep 3; ((counter++))
+        done
+
+    - name: Publish release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "mac-build-${{ github.run_number }}" \
+          "out/build/$preset/$VCMI_PACKAGE_FILE_NAME.dmg" \
+          --repo "$GITHUB_REPOSITORY" \
+          --target "$GITHUB_SHA" \
+          --title "$VCMI_PACKAGE_FILE_NAME" \
+          --notes "$GITHUB_SHA"
