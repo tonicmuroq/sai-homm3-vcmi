@@ -13,6 +13,7 @@
 #include "SaiAgent.h"
 #include "SaiView.h"
 
+#include "../../lib/battle/ReachabilityInfo.h"
 #include "../../lib/CCreatureHandler.h"
 #include "../../lib/CStack.h"
 #include "../../lib/GameLibrary.h"
@@ -321,14 +322,28 @@ JsonNode BattleAgent::creatureCastOptions(const CStack * unit) const
 std::vector<BattleAgent::EnemyReach> BattleAgent::enemyReach() const
 {
 	auto battle = cb->getBattle(battleID);
+	// Units move and die during the enemy's turn, so none of them is a wall: only terrain blocks the path.
+	auto occupied = BattleHexArray();
+	for(const auto * unit : battle->battleGetUnitsIf([](const battle::Unit * unit) { return unit->alive(); }))
+		for(const auto & hex : unit->getHexes())
+			occupied.insert(hex);
+
 	auto reach = std::vector<EnemyReach>();
 	for(const auto * enemy : battle->battleGetStacks(CPlayerBattleCallback::ONLY_ENEMY))
 	{
 		// Blinded, paralyzed and petrified units skip their turn.
 		if(enemy->hasBonusOfType(BonusType::NOT_ACTIVE) || !enemy->canMove())
 			continue;
-		auto entry = EnemyReach{enemy, {}, battle->battleCanShoot(enemy)};
-		auto positions = battle->battleGetAvailableHexes(enemy, false);
+		// A shooter blocked by an adjacent stack shoots again once that stack moves or dies.
+		auto entry = EnemyReach{enemy, {}, enemy->canShoot()};
+		auto params = ReachabilityInfo::Parameters();
+		params.side = enemy->unitSide();
+		params.doubleWide = enemy->doubleWide();
+		params.flying = enemy->hasBonusOfType(BonusType::FLYING);
+		params.startPosition = enemy->getPosition();
+		params.perspective = battle->battleGetMySide();
+		params.knownAccessible = &occupied;
+		auto positions = battle->battleGetAvailableHexes(battle->getReachability(params), enemy, false);
 		positions.insert(enemy->getPosition());
 		for(const auto & pos : positions)
 			for(const auto & hex : enemy->getSurroundingHexes(pos))

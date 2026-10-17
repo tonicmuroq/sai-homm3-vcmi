@@ -145,7 +145,7 @@ A question asked right after a `move` carries `context`: the hero with its full 
 
 `battle.options` lists what the active unit can do: `move` (reachable hexes), `attack` (every attackable enemy with each hex it can strike from and the engine's damage and retaliation estimate), `shoot`, `cast` (the unit's own spells), `heroCast` (the hero's spells with cost, damage, valid targets and the units each target affects), and whether retreat or surrender is possible.
 
-Each `move` hex and attack `from` hex carries `danger` when enemies can hit the unit there next round: `by` (unit ids), `damage` (the engine's summed min/max) and `dies` (`no`, `possibly`, `surely`); `stayDanger` is the same for staying put. Every enemy that can act lists the hexes it `threatens` next round, or `everything (shooter)`. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
+Each `move` hex and attack `from` hex carries `danger` when enemies can hit the unit there next round: `by` (unit ids), `damage` (the engine's summed min/max) and `dies` (`no`, `possibly`, `surely`); `stayDanger` is the same for staying put. Reach is computed with every unit treated as passable, since stacks move and die during the enemy's turn, and a shooter with ammunition counts as reaching everything even while blocked; the estimate errs toward danger. Every enemy that can act lists the hexes it `threatens` next round, or `everything (shooter)`. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
 
 A hero cast does not use the unit's turn; the same unit comes up again.
 
