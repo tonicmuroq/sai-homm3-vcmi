@@ -318,12 +318,24 @@ void SaiPlayerInterface::heroGotLevel(const CGHeroInstance * hero, PrimarySkill 
 		replies.push_back(static_cast<int32_t>(i));
 	}
 	payload["options"] = Options(texts);
-	if(skills.size() > SELECTABLE_BY_KEY)
-	{
-		agent->ask(questionID, "level_up", payload, replies);
-		return;
-	}
-	agent->ask(questionID, "level_up", payload, replies, Dialog{&OnTop<CLevelWindow>, [](int32_t reply) { return SelectAndAccept(reply); }});
+
+	// The window sorts skills by the hero's current level, then by name, and shows three at a time on a carousel.
+	auto shown = skills;
+	std::sort(shown.begin(), shown.end(), [hero](const SecondarySkill & a, const SecondarySkill & b) {
+		if(hero->getSecSkillLevel(a) == hero->getSecSkillLevel(b))
+			return a.toSkill()->getNameTranslated() < b.toSkill()->getNameTranslated();
+		return hero->getSecSkillLevel(a) > hero->getSecSkillLevel(b);
+	});
+	auto keys = [skills, shown](int32_t reply) {
+		auto position = static_cast<size_t>(std::find(shown.begin(), shown.end(), skills[reply]) - shown.begin());
+		if(shown.size() <= 3)
+			return SelectAndAccept(position);
+		auto typed = std::vector<EShortcut>(position, EShortcut::MOVE_RIGHT);
+		typed.push_back(EShortcut::SELECT_INDEX_1);
+		typed.push_back(EShortcut::GLOBAL_ACCEPT);
+		return typed;
+	};
+	agent->ask(questionID, "level_up", payload, replies, Dialog{&OnTop<CLevelWindow>, keys});
 	CPlayerInterface::heroGotLevel(hero, pskill, skills, moreLevelsFollow, questionID);
 }
 
