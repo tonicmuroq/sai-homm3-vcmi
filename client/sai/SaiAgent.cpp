@@ -380,6 +380,16 @@ Complaint Agent::submit(const std::function<void()> & action)
 	return awaitRequests(previousQuestion);
 }
 
+bool Agent::visitedSince(int64_t seq, const int3 & tile) const
+{
+	// Objects that block their tile are visited from next to it, so only the visit event tells a pickup from running out of movement.
+	auto lock = std::lock_guard(mutex);
+	auto wanted = Pos(tile);
+	return std::any_of(events.begin(), events.end(), [&](const JsonNode & event) {
+		return event["seq"].Integer() >= seq && event["type"].String() == "visit" && event["object"]["pos"] == wanted;
+	});
+}
+
 bool Agent::questionPending() const
 {
 	auto lock = std::lock_guard(mutex);
@@ -694,7 +704,6 @@ JsonNode Agent::move(const JsonNode & cmd)
 
 	auto from = hero->visitablePos();
 	auto path = std::make_shared<CGPath>();
-	auto visitsFromNextTile = false;
 	{
 		auto gsLock = std::shared_lock(CGameState::mutex);
 		auto paths = owner.getPathsInfo(hero);
@@ -703,16 +712,14 @@ JsonNode Agent::move(const JsonNode & cmd)
 		const auto * node = paths->getPathInfo(target);
 		if(node->turns > 0 && path->nextNode().turns > 0)
 			throw std::invalid_argument("the hero has no movement points left today");
-		for(const auto * obj : owner.cb->getVisitableObjs(target))
-			visitsFromNextTile |= obj->isBlockedVisitable();
 	}
-	// Nodes run from the target back to the start; a blocking object is visited from the tile before it.
-	auto approach = path->nodes.size() >= 2 ? path->nodes[1].coord : from;
 
+	auto firstEvent = int64_t();
 	{
 		auto lock = std::lock_guard(mutex);
 		movingHero = hero->id;
 		moveTarget = target;
+		firstEvent = nextSeq;
 	}
 	if(!questionPending())
 		stage.previewPath(hero, *path);
@@ -748,7 +755,7 @@ JsonNode Agent::move(const JsonNode & cmd)
 		result["outcome"] = JsonNode("battle");
 	else if(here == target)
 		result["outcome"] = JsonNode("arrived");
-	else if(visitsFromNextTile && here == approach)
+	else if(visitedSince(firstEvent, target))
 		result["outcome"] = JsonNode("visited");
 	else if(here == from)
 		result["outcome"] = JsonNode("did not move");
@@ -1198,7 +1205,12 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		}
 		gsLock.unlock();
 		onScreen([&] { stage.closeScreens(); });
-		return done(submit([&] { cb.castSpell(hero, spell->getId(), pos); }), "cast " + spell->getNameTranslated());
+		auto manaBefore = hero->mana;
+		auto complaint = submit([&] { cb.castSpell(hero, spell->getId(), pos); });
+		// Some refusals, e.g. Basic Town Portal with no other town to go to, come back as applied with no complaint.
+		if(complaint.empty() && hero->mana == manaBefore)
+			complaint = "the spell had no effect and cost no mana";
+		return done(complaint, "cast " + spell->getNameTranslated());
 	}
 
 	if(type == "dig")

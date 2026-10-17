@@ -332,8 +332,15 @@ std::vector<BattleAgent::EnemyReach> BattleAgent::enemyReach() const
 	for(const auto * enemy : battle->battleGetStacks(CPlayerBattleCallback::ONLY_ENEMY))
 	{
 		// Blinded, paralyzed and petrified units skip their turn.
-		if(enemy->hasBonusOfType(BonusType::NOT_ACTIVE) || !enemy->canMove())
+		if(enemy->hasBonusOfType(BonusType::NOT_ACTIVE))
 			continue;
+		// Arrow towers and ballistas never move but shoot every round.
+		if(!enemy->canMove())
+		{
+			if(enemy->canShoot() && !enemy->isCatapult())
+				reach.push_back(EnemyReach{enemy, {}, true});
+			continue;
+		}
 		// A shooter blocked by an adjacent stack shoots again once that stack moves or dies.
 		auto entry = EnemyReach{enemy, {}, enemy->canShoot()};
 		auto params = ReachabilityInfo::Parameters();
@@ -364,7 +371,8 @@ JsonNode BattleAgent::exposure(const CStack * unit, const BattleHex & at, const 
 		auto reaches = enemy.shooter || std::any_of(occupied.begin(), occupied.end(), [&](const BattleHex & hex) { return enemy.threatens.count(hex) > 0; });
 		if(!reaches)
 			continue;
-		auto estimate = battle->battleEstimateDamage(enemy.unit, unit, enemy.unit->getPosition());
+		// Turrets have no hex, so the estimate is taken without movement.
+		auto estimate = battle->battleEstimateDamage(enemy.unit, unit, 0);
 		damage.min += estimate.damage.min;
 		damage.max += estimate.damage.max;
 		node["by"].Vector().push_back(Num(enemy.unit->unitId()));

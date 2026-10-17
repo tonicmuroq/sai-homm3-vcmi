@@ -136,8 +136,8 @@ void Stage::showTown(const CGTownInstance * town) const
 {
 	auto opened = false;
 	onMainThread([&] {
-		auto top = ENGINE->windows().topWindow<CCastleInterface>();
-		if(top && top->town == town)
+		// No reference to the old screen may outlive closing it: its destructor is what clears castleInt.
+		if(auto top = ENGINE->windows().topWindow<CCastleInterface>(); top && top->town == town)
 			return;
 		closeScreensNow();
 		owner.openTownWindow(town);
@@ -151,8 +151,7 @@ void Stage::showHero(const CGHeroInstance * hero) const
 {
 	auto opened = false;
 	onMainThread([&] {
-		auto top = ENGINE->windows().topWindow<CHeroWindow>();
-		if(top && top->curHero == hero)
+		if(auto top = ENGINE->windows().topWindow<CHeroWindow>(); top && top->curHero == hero)
 			return;
 		closeScreensNow();
 		owner.openHeroWindow(hero);

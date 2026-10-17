@@ -80,6 +80,7 @@ class Agent
 	Complaint awaitRequests(QuestionID previousQuestion);
 	std::optional<Complaint> answerOnScreen(const Question & pending, int32_t reply);
 	bool questionPending() const;
+	bool visitedSince(int64_t seq, const int3 & tile) const;
 	bool waitUntil(const std::function<bool()> & done, std::chrono::milliseconds timeout);
 	JsonNode eventsSince(int64_t seq) const;
 	JsonNode questionContext() const;

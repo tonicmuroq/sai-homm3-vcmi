@@ -102,7 +102,7 @@ Guards are always exact counts. Enemy heroes and towns show exact counts only wh
 | `hire_hero` | `town` (or tavern object), `heroType` |
 | `dismiss_hero` | `hero` |
 | `swap_garrison` | `town` |
-| `cast` | `hero`, `spell`, `target: [x,y,z]` for ranged spells |
+| `cast` | `hero`, `spell`, `target: [x,y,z]` for ranged spells; a cast the game ignores (no mana spent) is an error |
 | `dig` | `hero` |
 | `build_boat` | `shipyard` |
 | `trade` | `market`, `mode`, `give`, `take`, `amount`, `slot`/`hero` where the mode needs them |
@@ -110,7 +110,7 @@ Guards are always exact counts. Enemy heroes and towns show exact counts only wh
 | `tactics` | `hero`, `enabled` |
 | `save` | optional `name` |
 
-A `move` walks the pathfinder's route and stops wherever the game would stop a click: at the object, a guard's zone, a dialog, or the end of the day's movement. The reply says where the hero ended up (`outcome`: `arrived`, `visited` for an object picked up from the next tile, `battle`, `stopped on the way`, `did not move`) and carries the events the walk produced, including a dialog the visit opened.
+A `move` walks the pathfinder's route and stops wherever the game would stop a click: at the object, a guard's zone, a dialog, or the end of the day's movement. The reply says where the hero ended up (`outcome`: `arrived`, `visited` when the game visited the object from the next tile, `battle`, `stopped on the way`, `did not move`) and carries the events the walk produced, including a dialog the visit opened.
 
 ### Questions
 
@@ -145,7 +145,7 @@ A question asked right after a `move` carries `context`: the hero with its full 
 
 `battle.options` lists what the active unit can do: `move` (reachable hexes), `attack` (every attackable enemy with each hex it can strike from and the engine's damage and retaliation estimate), `shoot`, `cast` (the unit's own spells), `heroCast` (the hero's spells with cost, damage, valid targets and the units each target affects), and whether retreat or surrender is possible.
 
-Each `move` hex and attack `from` hex carries `danger` when enemies can hit the unit there next round: `by` (unit ids), `damage` (the engine's summed min/max) and `dies` (`no`, `possibly`, `surely`); `stayDanger` is the same for staying put. Reach is computed with every unit treated as passable, since stacks move and die during the enemy's turn, and a shooter with ammunition counts as reaching everything even while blocked; the estimate errs toward danger. Every enemy that can act lists the hexes it `threatens` next round, or `everything (shooter)`. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
+Each `move` hex and attack `from` hex carries `danger` when enemies can hit the unit there next round: `by` (unit ids), `damage` (the engine's summed min/max) and `dies` (`no`, `possibly`, `surely`); `stayDanger` is the same for staying put. Reach is computed with every unit treated as passable, since stacks move and die during the enemy's turn, and a shooter with ammunition, an arrow tower or a ballista counts as reaching everything even while blocked; the estimate errs toward danger. Every enemy that can act lists the hexes it `threatens` next round, or `everything (shooter)`. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
 
 A hero cast does not use the unit's turn; the same unit comes up again.
 
