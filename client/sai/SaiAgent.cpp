@@ -57,6 +57,9 @@ constexpr auto POLL = std::chrono::milliseconds(50);
 constexpr auto REQUEST_TIMEOUT = std::chrono::seconds(15);
 constexpr auto MOVE_START_TIMEOUT = std::chrono::seconds(3);
 constexpr auto MOVE_TIMEOUT = std::chrono::seconds(120);
+// A visit's dialog or battle reaches the client shortly after the hero stops.
+constexpr auto DIALOG_TIMEOUT = std::chrono::seconds(30);
+constexpr auto VISIT_SETTLE_TIMEOUT = std::chrono::milliseconds(500);
 constexpr auto BATTLE_SETTLE_TIMEOUT = std::chrono::seconds(60);
 
 // Question kinds whose window keeps its own commands available until it is closed.
@@ -125,6 +128,7 @@ CreatureID CreatureOf(const JsonNode & node)
 
 Agent::Agent(CPlayerInterface & owner)
 	: owner(owner)
+	, stage(owner)
 {
 }
 
@@ -164,14 +168,14 @@ void Agent::record(const std::string & type, JsonNode event)
 	notify();
 }
 
-void Agent::ask(QuestionID id, const std::string & kind, JsonNode payload, std::vector<int32_t> replies)
+void Agent::ask(QuestionID id, const std::string & kind, JsonNode payload, std::vector<int32_t> replies, std::optional<Dialog> dialog)
 {
 	payload["id"] = JsonNode(static_cast<int64_t>(id.getNum()));
 	payload["kind"] = JsonNode(kind);
 	{
 		auto lock = std::lock_guard(mutex);
 		payload["context"] = questionContext();
-		question = Question{id, payload, std::move(replies)};
+		question = Question{id, payload, std::move(replies), std::move(dialog)};
 	}
 	auto event = JsonNode();
 	event["question"] = payload;
@@ -329,21 +333,16 @@ bool Agent::waitUntil(const std::function<bool()> & done, std::chrono::milliseco
 	return true;
 }
 
-Complaint Agent::submit(const std::function<void()> & action)
+QuestionID Agent::beginRequests()
 {
-	auto previousQuestion = QuestionID::NONE;
-	{
-		auto lock = std::lock_guard(mutex);
-		sentRequests.clear();
-		realizedRequests.clear();
-		commandThread = std::this_thread::get_id();
-		if(question)
-			previousQuestion = question->id;
-	}
-	{
-		auto gsLock = std::shared_lock(CGameState::mutex);
-		action();
-	}
+	auto lock = std::lock_guard(mutex);
+	sentRequests.clear();
+	realizedRequests.clear();
+	return question ? question->id : QuestionID::NONE;
+}
+
+Complaint Agent::awaitRequests(QuestionID previousQuestion)
+{
 	auto awaitingAfterSend = false;
 	{
 		auto lock = std::lock_guard(mutex);
@@ -357,11 +356,69 @@ Complaint Agent::submit(const std::function<void()> & action)
 	}, REQUEST_TIMEOUT);
 
 	auto lock = std::lock_guard(mutex);
-	commandThread = std::thread::id();
 	for(const auto & [id, complaint] : realizedRequests)
 		if(!complaint.empty())
 			return complaint;
 	return settled ? std::string() : std::string("the server did not answer in time");
+}
+
+Complaint Agent::submit(const std::function<void()> & action)
+{
+	auto previousQuestion = beginRequests();
+	{
+		auto lock = std::lock_guard(mutex);
+		commandThread = std::this_thread::get_id();
+	}
+	{
+		auto gsLock = std::shared_lock(CGameState::mutex);
+		action();
+	}
+	{
+		auto lock = std::lock_guard(mutex);
+		commandThread = std::thread::id();
+	}
+	return awaitRequests(previousQuestion);
+}
+
+bool Agent::questionPending() const
+{
+	auto lock = std::lock_guard(mutex);
+	return question.has_value();
+}
+
+std::optional<Complaint> Agent::answerOnScreen(const Question & pending, int32_t reply)
+{
+	auto stillPending = [&] {
+		auto lock = std::lock_guard(mutex);
+		return question && question->id == pending.id;
+	};
+	auto deadline = std::chrono::steady_clock::now() + DIALOG_TIMEOUT;
+	while(!stage.isShown(*pending.dialog))
+	{
+		if(!stillPending())
+			return Complaint();
+		if(std::chrono::steady_clock::now() > deadline)
+			return std::nullopt;
+		std::this_thread::sleep_for(POLL);
+	}
+	// The viewer reads the dialog before it is answered.
+	stage.pause();
+
+	auto previousQuestion = beginRequests();
+	// Keys reach the window on the main thread, so requests sent from there count as this command's.
+	auto tracking = [this](bool on) {
+		auto lock = std::lock_guard(mutex);
+		commandThread = on ? std::this_thread::get_id() : std::thread::id();
+	};
+	auto keys = pending.dialog->keys(reply);
+	for(size_t i = 0; i < keys.size(); ++i)
+	{
+		if(i > 0)
+			stage.pause();
+		if(!stage.type(*pending.dialog, keys[i], tracking))
+			return Complaint("another window covered the dialog; answer again");
+	}
+	return awaitRequests(previousQuestion);
 }
 
 HttpResponse Agent::handle(const HttpRequest & request)
@@ -589,15 +646,23 @@ JsonNode Agent::answer(const JsonNode & cmd)
 
 	auto reply = pending->replies[option];
 	auto kind = pending->payload["kind"].String();
-	auto complaint = submit([&] {
-		if(kind == "select_object")
-			owner.cb->sendQuestionAnswer(reply < 0 ? std::nullopt : std::optional<int32_t>(reply), pending->id);
-		else
-			owner.cb->selectionMade(reply, pending->id);
-	});
+	auto complaint = pending->dialog ? answerOnScreen(*pending, reply) : std::nullopt;
+	if(!complaint)
+	{
+		if(pending->dialog)
+			logGlobal->warn("sai_dialog_not_shown, kind=%s", kind);
+		complaint = submit([&] {
+			if(kind == "select_object")
+				owner.cb->sendQuestionAnswer(reply < 0 ? std::nullopt : std::optional<int32_t>(reply), pending->id);
+			else
+				owner.cb->selectionMade(reply, pending->id);
+		});
+	}
 	questionResolved(pending->id);
-	if(!complaint.empty())
-		throw std::invalid_argument(complaint);
+	if(kind == "battle_result" && reply == 1)
+		waitUntil([&] { return (battle && battle->awaitingOrders()) || question.has_value(); }, BATTLE_SETTLE_TIMEOUT);
+	if(!complaint->empty())
+		throw std::invalid_argument(*complaint);
 	return JsonNode(std::string("answered ") + pending->payload["options"][option]["text"].String());
 }
 
@@ -623,6 +688,7 @@ JsonNode Agent::move(const JsonNode & cmd)
 
 	auto from = hero->visitablePos();
 	auto path = std::make_shared<CGPath>();
+	auto visitsFromNextTile = false;
 	{
 		auto gsLock = std::shared_lock(CGameState::mutex);
 		auto paths = owner.getPathsInfo(hero);
@@ -631,13 +697,19 @@ JsonNode Agent::move(const JsonNode & cmd)
 		const auto * node = paths->getPathInfo(target);
 		if(node->turns > 0 && path->nextNode().turns > 0)
 			throw std::invalid_argument("the hero has no movement points left today");
+		for(const auto * obj : owner.cb->getVisitableObjs(target))
+			visitsFromNextTile |= obj->isBlockedVisitable();
 	}
+	// Nodes run from the target back to the start; a blocking object is visited from the tile before it.
+	auto approach = path->nodes.size() >= 2 ? path->nodes[1].coord : from;
 
 	{
 		auto lock = std::lock_guard(mutex);
 		movingHero = hero->id;
 		moveTarget = target;
 	}
+	if(!questionPending())
+		stage.previewPath(hero, *path);
 
 	// Moving through CPlayerInterface instead of the callback keeps the movement animated and its dialogs working.
 	auto issued = std::make_shared<std::atomic<bool>>(false);
@@ -651,6 +723,7 @@ JsonNode Agent::move(const JsonNode & cmd)
 	auto interrupted = [this] { return question.has_value() || (battle && battle->awaitingOrders()); };
 	waitUntil([&] { return issued->load() && (owner.isHeroMoving() || interrupted()); }, MOVE_START_TIMEOUT);
 	waitUntil([&] { return !owner.isHeroMoving() || interrupted(); }, MOVE_TIMEOUT);
+	waitUntil(interrupted, VISIT_SETTLE_TIMEOUT);
 
 	auto gsLock = std::shared_lock(CGameState::mutex);
 	auto result = JsonNode();
@@ -665,8 +738,12 @@ JsonNode Agent::move(const JsonNode & cmd)
 	result["to"] = Pos(here);
 	result["target"] = Pos(target);
 	result["movementLeft"] = JsonNode(static_cast<int64_t>(after->movementPointsRemaining()));
-	if(here == target)
+	if(currentBattle())
+		result["outcome"] = JsonNode("battle");
+	else if(here == target)
 		result["outcome"] = JsonNode("arrived");
+	else if(visitsFromNextTile && here == approach)
+		result["outcome"] = JsonNode("visited");
 	else if(here == from)
 		result["outcome"] = JsonNode("did not move");
 	else
@@ -835,11 +912,18 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		return army;
 	};
 
+	// Screens follow the command like a player's clicks; a question's own window stays in front instead.
+	auto onScreen = [this](const std::function<void()> & show) {
+		if(!questionPending())
+			show();
+	};
+
 	if(type == "move")
 		return move(cmd);
 
 	if(type == "end_turn")
 	{
+		onScreen([&] { stage.closeScreens(); });
 		ENGINE->dispatchMainThread([] {
 			if(adventureInt && GAME->interface() && GAME->interface()->makingTurn)
 				adventureInt->hotkeyEndingTurn();
@@ -849,7 +933,16 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 	}
 
 	if(type == "trade")
+	{
+		const CGTownInstance * town = nullptr;
+		{
+			auto gsLock = std::shared_lock(CGameState::mutex);
+			town = dynamic_cast<const CGTownInstance *>(cb.tryGetObj(IdOf(cmd["market"])));
+		}
+		if(town)
+			onScreen([&] { stage.showTown(town); });
 		return trade(cmd);
+	}
 
 	if(type == "save")
 	{
@@ -873,6 +966,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(cb.canBuildStructure(town, building) != EBuildingState::ALLOWED || town->getTown()->buildings.at(building)->mode != CBuilding::BUILD_NORMAL)
 			throw std::invalid_argument("that building cannot be built now (see the town's building list for why)");
 		gsLock.unlock();
+		onScreen([&] { stage.showTown(town); });
 		return done(submit([&] { cb.buildBuilding(town, building); }), "built");
 	}
 
@@ -912,6 +1006,8 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(!cb.getResourceAmount().canAfford(creature.toCreature()->getFullRecruitCost() * amount))
 			throw std::invalid_argument("not enough resources");
 		gsLock.unlock();
+		if(const auto * town = dynamic_cast<const CGTownInstance *>(dwelling))
+			onScreen([&] { stage.showTown(town); });
 		return done(submit([&] { cb.recruitCreatures(dwelling, destination, creature, amount, level); }), "recruited");
 	}
 
@@ -933,6 +1029,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(!cb.getResourceAmount().canAfford(info.getUpgradeCostsFor(target) * army->getStackCount(slot)))
 			throw std::invalid_argument("not enough resources for the upgrade");
 		gsLock.unlock();
+		onScreen([&] { stage.showScreenFor(army); });
 		return done(submit([&] { cb.upgradeCreature(army, slot, target); }), "upgraded");
 	}
 
@@ -984,6 +1081,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(split && occupant != nullptr && occupant != creature)
 			throw std::invalid_argument("a split can only go to an empty slot or one with the same creature");
 		gsLock.unlock();
+		onScreen([&] { stage.showScreenFor(dynamic_cast<const CGTownInstance *>(to) ? to : from); });
 		if(split)
 			return done(submit([&] { cb.splitStack(from, to, slot, toSlot, amount + (occupant ? to->getStackCount(toSlot) : 0)); }), "split");
 		return done(submit([&] { cb.mergeOrSwapStacks(from, to, slot, toSlot); }), "moved");
@@ -996,6 +1094,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(army->getCreature(slot) == nullptr)
 			throw std::invalid_argument("that slot is empty");
 		gsLock.unlock();
+		onScreen([&] { stage.showScreenFor(army); });
 		return done(submit([&] { cb.dismissCreature(army, slot); }), "dismissed");
 	}
 
@@ -1008,6 +1107,8 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(fromHero->getArt(src.slot) == nullptr)
 			throw std::invalid_argument("no artifact in the source slot");
 		gsLock.unlock();
+		if(fromHero == toHero)
+			onScreen([&] { stage.showHero(fromHero); });
 		return done(submit([&] { cb.swapArtifacts(src, dst); }), "artifact moved");
 	}
 
@@ -1020,6 +1121,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 			throw std::invalid_argument("no artifact in that slot");
 		auto combined = cmd["combined"].isNull() ? ArtifactID() : ArtifactID(ArtifactID::decode(cmd["combined"].String()));
 		gsLock.unlock();
+		onScreen([&] { stage.showHero(hero); });
 		return done(submit([&] { cb.assembleArtifacts(hero->id, slot, type == "artifact_assemble", combined); }), type == "artifact_assemble" ? "assembled" : "disassembled");
 	}
 
@@ -1030,6 +1132,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(!artifact.hasValue())
 			throw std::invalid_argument("unknown artifact");
 		gsLock.unlock();
+		onScreen([&] { stage.showScreenFor(hero); });
 		return done(submit([&] { cb.buyArtifact(hero, artifact); }), "bought");
 	}
 
@@ -1046,6 +1149,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(candidate == nullptr)
 			throw std::invalid_argument("that hero is not in the tavern");
 		gsLock.unlock();
+		onScreen([&] { stage.showScreenFor(place); });
 		return done(submit([&] { cb.recruitHero(place, candidate); }), "hired");
 	}
 
@@ -1053,6 +1157,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 	{
 		const auto * hero = myHero(cmd["hero"]);
 		gsLock.unlock();
+		onScreen([&] { stage.closeScreens(); });
 		return done(submit([&] { cb.dismissHero(hero); }), "dismissed");
 	}
 
@@ -1060,6 +1165,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 	{
 		const auto * town = myTown(cmd["town"]);
 		gsLock.unlock();
+		onScreen([&] { stage.showTown(town); });
 		return done(submit([&] { cb.swapGarrisonHero(town); }), "swapped");
 	}
 
@@ -1085,6 +1191,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 				throw std::invalid_argument("cannot cast at that tile");
 		}
 		gsLock.unlock();
+		onScreen([&] { stage.closeScreens(); });
 		return done(submit([&] { cb.castSpell(hero, spell->getId(), pos); }), "cast " + spell->getNameTranslated());
 	}
 
@@ -1094,6 +1201,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(hero->diggingStatus() != EDiggingStatus::CAN_DIG)
 			throw std::invalid_argument("cannot dig here now (needs full movement points and diggable ground)");
 		gsLock.unlock();
+		onScreen([&] { stage.closeScreens(); });
 		return done(submit([&] { cb.dig(hero); }), "dug");
 	}
 
@@ -1105,6 +1213,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		if(shipyard->shipyardStatus() != IBoatGenerator::GOOD)
 			throw std::invalid_argument("the shipyard cannot build a boat now");
 		gsLock.unlock();
+		onScreen([&] { stage.closeScreens(); });
 		return done(submit([&] { cb.buildBoat(shipyard); }), "boat built");
 	}
 
@@ -1113,6 +1222,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		const auto * hero = myHero(cmd["hero"]);
 		auto tight = cmd["mode"].String() == "tight";
 		gsLock.unlock();
+		onScreen([&] { stage.showHero(hero); });
 		return done(submit([&] { cb.setFormation(hero, tight ? EArmyFormation::TIGHT : EArmyFormation::LOOSE); }), "formation set");
 	}
 
@@ -1121,6 +1231,7 @@ JsonNode Agent::adventureCommand(const std::string & type, const JsonNode & cmd)
 		const auto * hero = myHero(cmd["hero"]);
 		auto enabled = cmd["enabled"].Bool();
 		gsLock.unlock();
+		onScreen([&] { stage.showHero(hero); });
 		return done(submit([&] { cb.setTactics(hero, enabled); }), "tactics set");
 	}
 

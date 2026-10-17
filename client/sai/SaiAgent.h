@@ -10,6 +10,7 @@
 #pragma once
 
 #include "SaiServer.h"
+#include "SaiStage.h"
 #include "SaiView.h"
 
 #include "../../lib/constants/EntityIdentifiers.h"
@@ -29,6 +30,8 @@ struct Question
 	QuestionID id;
 	JsonNode payload;
 	std::vector<int32_t> replies;
+	// Without a dialog on screen the reply goes to the server directly.
+	std::optional<Dialog> dialog;
 };
 
 struct KingdomSnapshot
@@ -42,6 +45,7 @@ struct KingdomSnapshot
 class Agent
 {
 	CPlayerInterface & owner;
+	Stage stage;
 
 	mutable std::mutex mutex;
 	std::condition_variable changed;
@@ -72,6 +76,10 @@ class Agent
 	JsonNode market(const JsonNode & query);
 
 	Complaint submit(const std::function<void()> & action);
+	QuestionID beginRequests();
+	Complaint awaitRequests(QuestionID previousQuestion);
+	std::optional<Complaint> answerOnScreen(const Question & pending, int32_t reply);
+	bool questionPending() const;
 	bool waitUntil(const std::function<bool()> & done, std::chrono::milliseconds timeout);
 	JsonNode eventsSince(int64_t seq) const;
 	JsonNode questionContext() const;
@@ -81,9 +89,10 @@ public:
 	explicit Agent(CPlayerInterface & owner);
 
 	HttpResponse handle(const HttpRequest & request);
+	const Stage & getStage() const { return stage; }
 
 	void record(const std::string & type, JsonNode event);
-	void ask(QuestionID id, const std::string & kind, JsonNode payload, std::vector<int32_t> replies);
+	void ask(QuestionID id, const std::string & kind, JsonNode payload, std::vector<int32_t> replies, std::optional<Dialog> dialog = std::nullopt);
 	void questionResolved(QuestionID id);
 	void requestSent(int requestID);
 	void requestRealized(int requestID);

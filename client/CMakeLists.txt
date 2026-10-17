@@ -200,6 +200,7 @@ set(vcmiclientcommon_SRCS
 	sai/SaiBattle.cpp
 	sai/SaiPlayerInterface.cpp
 	sai/SaiServer.cpp
+	sai/SaiStage.cpp
 	sai/SaiView.cpp
 	NetPacksClient.cpp
 	NetPacksLobbyClient.cpp
@@ -434,6 +435,7 @@ set(vcmiclientcommon_HEADERS
 	sai/SaiBattle.h
 	sai/SaiPlayerInterface.h
 	sai/SaiServer.h
+	sai/SaiStage.h
 	sai/SaiView.h
 	GameChatHandler.h
 	LobbyClientNetPackVisitors.h

@@ -431,6 +431,8 @@ JsonNode HeroDetail(CCallback & cb, const CGHeroInstance * hero)
 		entry["adventure"] = JsonNode(spell->isAdventure());
 		entry["canCast"] = JsonNode(hero->canCastThisSpell(spell) && hero->mana >= hero->getSpellCost(spell));
 		entry["description"] = Str(spell->getDescriptionTranslated(hero->getSpellSchoolLevel(spell)));
+		if(spell->isDamage())
+			entry["damage"] = Num(spell->calculateDamage(hero));
 		node["spells"].Vector().push_back(entry);
 	}
 
@@ -543,13 +545,12 @@ JsonNode TownDetail(CCallback & cb, const CGTownInstance * town)
 	node["mageGuild"].setType(JsonNode::JsonType::DATA_VECTOR);
 	for(size_t level = 0; level < town->spells.size(); ++level)
 	{
-		for(const auto & id : town->spells[level])
+		auto offered = static_cast<size_t>(std::max(0, town->spellsAtLevel(static_cast<int>(level) + 1, true)));
+		for(size_t i = 0; i < std::min(offered, town->spells[level].size()); ++i)
 		{
-			if(static_cast<int>(level) >= town->mageGuildLevel())
-				break;
 			auto item = JsonNode();
 			item["level"] = Num(static_cast<int>(level) + 1);
-			item["name"] = Str(id.toSpell()->getNameTranslated());
+			item["name"] = Str(town->spells[level][i].toSpell()->getNameTranslated());
 			node["mageGuild"].Vector().push_back(item);
 		}
 	}
@@ -571,6 +572,29 @@ JsonNode TownDetail(CCallback & cb, const CGTownInstance * town)
 	return node;
 }
 
+namespace
+{
+
+JsonNode ScoutedArmy(const ArmyDescriptor & army)
+{
+	auto node = JsonNode();
+	node.setType(JsonNode::JsonType::DATA_VECTOR);
+	for(const auto & [slot, stack] : army)
+	{
+		auto entry = JsonNode();
+		// Without detailed scouting the count is a quantity band, shown as its range ("10-19").
+		if(army.isDetailed)
+			entry["count"] = Num(stack.getCount());
+		else
+			entry["countRange"] = Str(CCreature::getQuantityRangeStringForId(static_cast<CCreature::CreatureQuantityId>(stack.getCount())));
+		entry["creature"] = CreatureStats(stack.getCreature());
+		node.Vector().push_back(entry);
+	}
+	return node;
+}
+
+}
+
 JsonNode ObjectDetail(CCallback & cb, const CGObjectInstance * obj, const CGHeroInstance * viewer)
 {
 	auto me = *cb.getPlayerID();
@@ -590,14 +614,7 @@ JsonNode ObjectDetail(CCallback & cb, const CGObjectInstance * obj, const CGHero
 		if(cb.getHeroInfo(hero, info))
 		{
 			node["level"] = Num(hero->level);
-			for(const auto & [slot, stack] : info.army)
-			{
-				auto entry = JsonNode();
-				entry["count"] = Num(stack.getCount());
-				entry["exact"] = JsonNode(info.army.isDetailed);
-				entry["creature"] = CreatureStats(stack.getCreature());
-				node["army"].Vector().push_back(entry);
-			}
+			node["army"] = ScoutedArmy(info.army);
 			if(info.details)
 				for(int i = 0; i < 4; ++i)
 					node["primary"][NPrimarySkill::names[i]] = Num(info.details->primskills[i]);
@@ -614,14 +631,7 @@ JsonNode ObjectDetail(CCallback & cb, const CGObjectInstance * obj, const CGHero
 		auto info = InfoAboutTown();
 		if(cb.getTownInfo(town, info))
 		{
-			for(const auto & [slot, stack] : info.army)
-			{
-				auto entry = JsonNode();
-				entry["count"] = Num(stack.getCount());
-				entry["exact"] = JsonNode(info.army.isDetailed);
-				entry["creature"] = CreatureStats(stack.getCreature());
-				node["garrison"].Vector().push_back(entry);
-			}
+			node["garrison"] = ScoutedArmy(info.army);
 		}
 		return node;
 	}

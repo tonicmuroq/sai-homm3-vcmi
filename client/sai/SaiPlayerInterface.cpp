@@ -16,14 +16,26 @@
 #include "SaiView.h"
 
 #include "../GameEngine.h"
+#include "../CServerHandler.h"
+#include "../Client.h"
+#include "../GameInstance.h"
 #include "../battle/BattleInterface.h"
 #include "../battle/BattleResultWindow.h"
 #include "../battle/BattleWindow.h"
 #include "../gui/WindowHandler.h"
+#include "../PlayerLocalState.h"
+#include "../widgets/Buttons.h"
+#include "../windows/InfoWindows.h"
+#include "../windows/GUIClasses.h"
+#include "../windows/CMarketWindow.h"
+#include "../windows/CExchangeWindow.h"
 
 #include "../../lib/CConfigHandler.h"
 #include "../../lib/CCreatureHandler.h"
 #include "../../lib/CSkillHandler.h"
+#include "../../lib/StartInfo.h"
+#include "../../lib/battle/CPlayerBattleCallback.h"
+#include "../../lib/CPlayerState.h"
 #include "../../lib/CThreadHelper.h"
 #include "../../lib/GameLibrary.h"
 #include "../../lib/constants/StringConstants.h"
@@ -121,6 +133,26 @@ std::string ComponentText(const Component & component)
 	return text;
 }
 
+template<typename Window>
+bool OnTop()
+{
+	return ENGINE->windows().topWindow<Window>() != nullptr;
+}
+
+template<typename Window>
+Dialog Closing(EShortcut key)
+{
+	return Dialog{&OnTop<Window>, [key](int32_t) { return std::vector<EShortcut>{key}; }};
+}
+
+// Component boxes bind their entries to the number keys.
+constexpr size_t SELECTABLE_BY_KEY = 8;
+
+std::vector<EShortcut> SelectAndAccept(size_t index)
+{
+	return {vstd::next(EShortcut::SELECT_INDEX_1, index), EShortcut::GLOBAL_ACCEPT};
+}
+
 }
 
 std::shared_ptr<CPlayerInterface> MakePlayerInterface(PlayerColor color)
@@ -204,14 +236,22 @@ void SaiPlayerInterface::showInfoDialog(EInfoWindowMode type, const std::string 
 	event["components"] = Components(components);
 	agent->record("message", event);
 
-	// Info-bar messages do not block and are still shown; a modal window would block the game.
 	auto infoBar = type == EInfoWindowMode::INFO || (type == EInfoWindowMode::AUTO && settings["gameTweaks"]["infoBarPick"].Bool());
-	if(infoBar)
-		CPlayerInterface::showInfoDialog(type, text, components, soundID);
+	CPlayerInterface::showInfoDialog(type, text, components, soundID);
+	// A modal message blocks the game until closed, so it is closed once read.
+	if(!infoBar)
+		agent->getStage().readInfoWindow();
 }
 
 void SaiPlayerInterface::showBlockingDialog(const std::string & text, const std::vector<Component> & components, QuestionID questionID, const int soundID, bool selection, bool cancel, bool safeToAutoaccept)
 {
+	// The GUI answers these itself, as HD mod does.
+	if(!selection && cancel && safeToAutoaccept && settings["general"]["enableUiEnhancements"].Bool())
+	{
+		CPlayerInterface::showBlockingDialog(text, components, questionID, soundID, selection, cancel, safeToAutoaccept);
+		return;
+	}
+
 	auto payload = JsonNode();
 	payload["prompt"] = JsonNode(text);
 	payload["components"] = Components(components);
@@ -238,7 +278,21 @@ void SaiPlayerInterface::showBlockingDialog(const std::string & text, const std:
 		replies = {1, 0};
 	}
 	payload["options"] = Options(texts);
-	agent->ask(questionID, selection ? "choose" : "confirm", payload, replies);
+
+	auto dialog = std::optional<Dialog>();
+	if(selection && components.size() <= SELECTABLE_BY_KEY)
+		dialog = Dialog{&OnTop<CSelWindow>, [](int32_t reply) {
+			return reply == 0 ? std::vector<EShortcut>{EShortcut::GLOBAL_CANCEL} : SelectAndAccept(reply - 1);
+		}};
+	else if(!selection && cancel)
+		dialog = Dialog{[] {
+			auto window = ENGINE->windows().topWindow<CInfoWindow>();
+			return window && !dynamic_cast<CSelWindow *>(window.get()) && window->buttons.size() == 2;
+		}, [](int32_t reply) { return std::vector<EShortcut>{reply == 1 ? EShortcut::GLOBAL_ACCEPT : EShortcut::GLOBAL_CANCEL}; }};
+
+	agent->ask(questionID, selection ? "choose" : "confirm", payload, replies, dialog);
+	if(dialog)
+		CPlayerInterface::showBlockingDialog(text, components, questionID, soundID, selection, cancel, safeToAutoaccept);
 }
 
 void SaiPlayerInterface::heroGotLevel(const CGHeroInstance * hero, PrimarySkill pskill, const std::vector<SecondarySkill> & skills, bool moreLevelsFollow, QuestionID questionID)
@@ -264,7 +318,13 @@ void SaiPlayerInterface::heroGotLevel(const CGHeroInstance * hero, PrimarySkill 
 		replies.push_back(static_cast<int32_t>(i));
 	}
 	payload["options"] = Options(texts);
-	agent->ask(questionID, "level_up", payload, replies);
+	if(skills.size() > SELECTABLE_BY_KEY)
+	{
+		agent->ask(questionID, "level_up", payload, replies);
+		return;
+	}
+	agent->ask(questionID, "level_up", payload, replies, Dialog{&OnTop<CLevelWindow>, [](int32_t reply) { return SelectAndAccept(reply); }});
+	CPlayerInterface::heroGotLevel(hero, pskill, skills, moreLevelsFollow, questionID);
 }
 
 void SaiPlayerInterface::commanderGotLevel(const CCommanderInstance * commander, std::vector<ui32> skills, bool moreLevelsFollow, QuestionID questionID)
@@ -306,7 +366,26 @@ void SaiPlayerInterface::showMapObjectSelectDialog(QuestionID questionID, const 
 	texts.push_back("cancel");
 	replies.push_back(-1);
 	payload["options"] = Options(texts);
-	agent->ask(questionID, "select_object", payload, replies);
+
+	// The list window puts your own towns first, in the order of the town list.
+	auto listed = objects;
+	auto ownedTowns = localState->getOwnedTowns();
+	auto townOrder = [&](const ObjectInstanceID & id) {
+		auto it = std::find_if(ownedTowns.begin(), ownedTowns.end(), [&](const CGTownInstance * town) { return town->id == id; });
+		return it == ownedTowns.end() ? std::numeric_limits<size_t>::max() : static_cast<size_t>(it - ownedTowns.begin());
+	};
+	std::stable_sort(listed.begin(), listed.end(), [&](const auto & left, const auto & right) { return townOrder(left) < townOrder(right); });
+	auto keys = [listed](int32_t reply) {
+		if(reply < 0)
+			return std::vector<EShortcut>{EShortcut::GLOBAL_CANCEL};
+		auto row = std::find(listed.begin(), listed.end(), ObjectInstanceID(reply)) - listed.begin();
+		auto typed = std::vector<EShortcut>{EShortcut::MOVE_FIRST};
+		typed.insert(typed.end(), row, EShortcut::MOVE_DOWN);
+		typed.push_back(EShortcut::GLOBAL_ACCEPT);
+		return typed;
+	};
+	agent->ask(questionID, "select_object", payload, replies, Dialog{&OnTop<CObjectListWindow>, keys});
+	CPlayerInterface::showMapObjectSelectDialog(questionID, icon, title, description, objects);
 }
 
 void SaiPlayerInterface::showGarrisonDialog(const CArmedInstance * up, const CGHeroInstance * down, bool removableUnits, QuestionID questionID, const MetaString & customTitle)
@@ -318,7 +397,8 @@ void SaiPlayerInterface::showGarrisonDialog(const CArmedInstance * up, const CGH
 	payload["armies"].Vector()[1]["army"] = Army(down);
 	payload["removableUnits"] = JsonNode(removableUnits);
 	payload["options"] = Options({"close"});
-	agent->ask(questionID, "garrison", payload, {0});
+	agent->ask(questionID, "garrison", payload, {0}, Closing<CGarrisonWindow>(EShortcut::GLOBAL_ACCEPT));
+	CPlayerInterface::showGarrisonDialog(up, down, removableUnits, questionID, customTitle);
 }
 
 void SaiPlayerInterface::heroExchangeStarted(ObjectInstanceID hero1, ObjectInstanceID hero2, QuestionID question)
@@ -332,7 +412,8 @@ void SaiPlayerInterface::heroExchangeStarted(ObjectInstanceID hero1, ObjectInsta
 	payload["prompt"] = JsonNode("Two heroes meet: move troops with army_move and artifacts with artifact_move, then answer to close");
 	payload["heroes"].Vector() = {JsonNode(static_cast<int64_t>(hero1.getNum())), JsonNode(static_cast<int64_t>(hero2.getNum()))};
 	payload["options"] = Options({"close"});
-	agent->ask(question, "exchange", payload, {0});
+	agent->ask(question, "exchange", payload, {0}, Closing<CExchangeWindow>(EShortcut::GLOBAL_ACCEPT));
+	CPlayerInterface::heroExchangeStarted(hero1, hero2, question);
 }
 
 void SaiPlayerInterface::showRecruitmentDialog(const CGDwelling * dwelling, const CArmedInstance * dst, int level, QuestionID questionID)
@@ -342,7 +423,8 @@ void SaiPlayerInterface::showRecruitmentDialog(const CGDwelling * dwelling, cons
 	payload["dwelling"] = ObjectDetail(*cb, dwelling, nullptr);
 	payload["destination"] = ObjectRef(dst);
 	payload["options"] = Options({"close"});
-	agent->ask(questionID, "recruit", payload, {0});
+	agent->ask(questionID, "recruit", payload, {0}, Closing<CRecruitmentWindow>(EShortcut::GLOBAL_CANCEL));
+	CPlayerInterface::showRecruitmentDialog(dwelling, dst, level, questionID);
 }
 
 void SaiPlayerInterface::showMarketWindow(const IMarket * market, const CGHeroInstance * visitor, QuestionID questionID)
@@ -353,7 +435,8 @@ void SaiPlayerInterface::showMarketWindow(const IMarket * market, const CGHeroIn
 	if(visitor)
 		payload["hero"] = JsonNode(static_cast<int64_t>(visitor->id.getNum()));
 	payload["options"] = Options({"close"});
-	agent->ask(questionID, "market", payload, {0});
+	agent->ask(questionID, "market", payload, {0}, Closing<CMarketWindow>(EShortcut::GLOBAL_RETURN));
+	CPlayerInterface::showMarketWindow(market, visitor, questionID);
 }
 
 void SaiPlayerInterface::showUniversityWindow(const IMarket * market, const CGHeroInstance * visitor, QuestionID questionID)
@@ -364,7 +447,8 @@ void SaiPlayerInterface::showUniversityWindow(const IMarket * market, const CGHe
 	if(visitor)
 		payload["hero"] = JsonNode(static_cast<int64_t>(visitor->id.getNum()));
 	payload["options"] = Options({"close"});
-	agent->ask(questionID, "university", payload, {0});
+	agent->ask(questionID, "university", payload, {0}, Closing<CUniversityWindow>(EShortcut::GLOBAL_ACCEPT));
+	CPlayerInterface::showUniversityWindow(market, visitor, questionID);
 }
 
 void SaiPlayerInterface::showHillFortWindow(const CGObjectInstance * object, const CGHeroInstance * visitor)
@@ -374,6 +458,7 @@ void SaiPlayerInterface::showHillFortWindow(const CGObjectInstance * object, con
 	event["hero"] = JsonNode(static_cast<int64_t>(visitor->id.getNum()));
 	event["hint"] = JsonNode("upgrades of this hero's stacks are available here through the upgrade command");
 	agent->record("hill_fort", event);
+	CPlayerInterface::showHillFortWindow(object, visitor);
 }
 
 void SaiPlayerInterface::showTavernWindow(const CGObjectInstance * object, const CGHeroInstance * visitor, QuestionID questionID)
@@ -394,12 +479,14 @@ void SaiPlayerInterface::showTavernWindow(const CGObjectInstance * object, const
 			payload["heroes"].Vector().push_back(entry);
 		}
 	payload["options"] = Options({"close"});
-	agent->ask(questionID, "tavern", payload, {0});
+	agent->ask(questionID, "tavern", payload, {0}, Closing<CTavernWindow>(EShortcut::GLOBAL_CANCEL));
+	CPlayerInterface::showTavernWindow(object, visitor, questionID);
 }
 
 void SaiPlayerInterface::showThievesGuildWindow(const CGObjectInstance * obj)
 {
 	agent->record("thieves_guild", ObjectRef(obj));
+	CPlayerInterface::showThievesGuildWindow(obj);
 }
 
 void SaiPlayerInterface::showShipyardDialog(const IShipyard * obj)
@@ -412,6 +499,7 @@ void SaiPlayerInterface::showShipyardDialog(const IShipyard * obj)
 	event["cost"] = Resources(cost);
 	event["canBuild"] = JsonNode(obj->shipyardStatus() == IBoatGenerator::GOOD);
 	agent->record("shipyard", event);
+	CPlayerInterface::showShipyardDialog(obj);
 }
 
 void SaiPlayerInterface::questionResolved(QuestionID questionID)
@@ -527,6 +615,15 @@ void SaiPlayerInterface::battleStart(const BattleID & battleID, const CCreatureS
 	battleAgent->battleStart(battleID, army1, army2, tile, hero1, hero2, side, replayAllowed);
 	agent->setBattle(battleAgent);
 
+	// Quick combat has already handed the battle to the configured combat AI; the agent takes its place, without a battle window.
+	if(autofightingAI)
+	{
+		unregisterBattleInterface(autofightingAI);
+		autofightingAI = battleAgent;
+		registerBattleInterface(autofightingAI);
+		battleEngaged = true;
+	}
+
 	auto event = JsonNode();
 	event["battle"] = JsonNode(static_cast<int64_t>(battleID.getNum()));
 	event["tile"] = Pos(tile);
@@ -578,26 +675,16 @@ void SaiPlayerInterface::battleLogMessage(const BattleID & battleID, const std::
 	CPlayerInterface::battleLogMessage(battleID, lines);
 }
 
-void SaiPlayerInterface::dismissBattleResult()
+bool SaiPlayerInterface::replayAllowed(const BattleID & battleID, QuestionID questionID) const
 {
-	// The result window blocks until clicked; once it appears it is closed from the main thread, like a click.
-	std::thread([] {
-		setThreadName("SaiBattleResult");
-		auto pressed = std::make_shared<std::atomic<bool>>(false);
-		for(int i = 0; i < 200 && !*pressed; ++i)
-		{
-			ENGINE->dispatchMainThread([pressed] {
-				if(*pressed)
-					return;
-				if(auto window = ENGINE->windows().topWindow<BattleResultWindow>())
-				{
-					*pressed = true;
-					window->bExitf();
-				}
-			});
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		}
-	}).detach();
+	if(questionID == QuestionID::NONE || !cb->getStartInfo()->extraOptionsInfo.unlimitedReplay)
+		return false;
+	auto battle = cb->getBattle(battleID);
+	auto isHuman = [&](BattleSide side) {
+		const auto * state = GAME->server().client->gameInfo().tryGetPlayerState(battle->sideToPlayer(side));
+		return state && state->isHuman();
+	};
+	return isHuman(BattleSide::ATTACKER) != isHuman(BattleSide::DEFENDER);
 }
 
 void SaiPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult * br, QuestionID questionID)
@@ -618,9 +705,23 @@ void SaiPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult
 	event["experience"] = JsonNode(static_cast<int64_t>(br->exp[mySide]));
 	agent->record("battle_end", event);
 
+	auto payload = event;
+	payload["prompt"] = JsonNode("The battle result window is open; accept it, or replay the battle from the start");
+	auto texts = std::vector<std::string>{"accept"};
+	auto replies = std::vector<int32_t>{0};
+	if(replayAllowed(battleID, questionID))
+	{
+		texts.push_back("replay");
+		replies.push_back(1);
+	}
+	payload["options"] = Options(texts);
+
 	agent->setBattle(nullptr);
 	battleAgent.reset();
-	dismissBattleResult();
+	// The result window binds accept to its OK button and cancel to its replay button.
+	agent->ask(questionID, "battle_result", payload, replies, Dialog{&OnTop<BattleResultWindow>, [](int32_t reply) {
+		return std::vector<EShortcut>{reply == 1 ? EShortcut::GLOBAL_CANCEL : EShortcut::GLOBAL_ACCEPT};
+	}});
 	CPlayerInterface::battleEnd(battleID, br, questionID);
 }
 

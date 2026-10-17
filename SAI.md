@@ -17,6 +17,7 @@ Everything lives in `client/sai/`. Upstream is touched in two places only, so a 
 | `SaiAgent` | the session: HTTP routing, phase, event log, pending question, adventure commands |
 | `SaiBattle` | `CBattleGameInterface` plugged in as the autocombat AI; battle state, legal orders, battle commands |
 | `SaiView` | read-only JSON views of heroes, towns, objects, map, kingdom, scenario |
+| `SaiStage` | what a viewer sees: opens the town or hero screen a command belongs to, previews a move's path, types answers into real dialogs, closes info windows once read |
 | `SaiServer` | a minimal blocking HTTP/1.1 server on boost::asio |
 
 `MakePlayerInterface` returns a plain `CPlayerInterface` unless `VCMI_SAI` is set, so a build of this fork plays exactly like upstream without it.
@@ -29,6 +30,7 @@ Battles are fought through the autocombat slot, the same way the autocombat butt
 |---|---|
 | `VCMI_SAI` | any non-empty value turns the bridge on for the first human seat |
 | `VCMI_SAI_ADDR` | bind address, default `127.0.0.1:18080` |
+| `VCMI_SAI_PACE_MS` | pause between on-screen steps, default `800`; info windows stay up three paces; `0` plays at full speed |
 
 Start a game from the menu as usual. The bridge answers `{"phase":"no_game"}` until a game is running.
 
@@ -68,7 +70,7 @@ Commands block until the server has applied them, and a command that starts a ba
 |---|---|
 | `GET /state` | phase, date, resources, hero and town summaries, the pending question, the battle state, `lastEvent` |
 | `GET /events?since=N` | every event after sequence number N |
-| `GET /hero?id=` | primary and secondary skills, experience, morale, luck, army with full creature stats, worn and backpack artifacts, spellbook with costs and castability, specialty, formation |
+| `GET /hero?id=` | primary and secondary skills, experience, morale, luck, army with full creature stats, worn and backpack artifacts, spellbook with costs, damage and castability, specialty, formation |
 | `GET /town?id=` | garrison, every building with state (`built`, `allowed`, `missing_prerequisites`, `no_resources`, ...), cost, what it produces, what it unlocks and what it still requires; dwellings with available count and growth; mage guild; tavern heroes |
 | `GET /object?id=&hero=` or `?x=&y=&z=` | owner, hover text, visited flags, exact guards with full stats and a threat rating per hero, resource amount, mine output, artifact, dwelling stock, monster reward, the monsters guarding the tile |
 | `GET /map?hero=&radius=` or `?x=&y=&z=` | text render around a point (`?` fog, `,` reachable today, `x` inside a monster's zone of control, ...) and every object in it |
@@ -78,7 +80,7 @@ Commands block until the server has applied them, and a command that starts a ba
 | `GET /scenario` | map name, description, victory and loss conditions, players |
 | `GET /battle` | the battle state on its own |
 
-Guards are always exact counts. `threat` uses the bands VCMI shows on a monster's hover (`level` 0 to 11, `ratio` = guard strength / hero strength).
+Guards are always exact counts. Enemy heroes and towns show exact counts only when scouted in detail; otherwise each stack has `countRange` (`"20-49"`), as their hover does. `threat` uses the bands VCMI shows on a monster's hover (`level` 0 to 11, `ratio` = guard strength / hero strength).
 
 ### Adventure commands
 
@@ -108,7 +110,7 @@ Guards are always exact counts. `threat` uses the bands VCMI shows on a monster'
 | `tactics` | `hero`, `enabled` |
 | `save` | optional `name` |
 
-A `move` walks the pathfinder's route and stops wherever the game would stop a click: at the object, a guard's zone, a dialog, or the end of the day's movement. The reply says where the hero ended up (`outcome`: `arrived`, `stopped on the way`, `did not move`) and carries the events the walk produced.
+A `move` walks the pathfinder's route and stops wherever the game would stop a click: at the object, a guard's zone, a dialog, or the end of the day's movement. The reply says where the hero ended up (`outcome`: `arrived`, `visited` for an object picked up from the next tile, `battle`, `stopped on the way`, `did not move`) and carries the events the walk produced, including a dialog the visit opened.
 
 ### Questions
 
@@ -121,7 +123,10 @@ A `move` walks the pathfinder's route and stops wherever the game would stop a c
 | `level_up` | pick a secondary skill |
 | `commander_level` | pick a commander skill |
 | `select_object` | pick a target object, e.g. a town for Town Portal |
+| `battle_result` | the battle result window; `replay` is offered when the game allows unlimited replays |
 | `garrison`, `exchange`, `recruit`, `market`, `university`, `tavern` | a window is open: use `army_move`, `artifact_move`, `recruit`, `trade`, `hire_hero` while it is, then `answer` to close it |
+
+The dialog is on screen while it is pending, and `answer` types the choice into it as a player would (number keys, Enter, Esc). A dialog that never appears is answered directly after 30 seconds.
 
 A question asked right after a `move` carries `context`: the hero with its full army and the objects and guards at the destination, so a fight can be weighed before it is accepted.
 
@@ -134,10 +139,13 @@ A question asked right after a `move` carries `context`: the hero with its full 
 | `unit_shoot` | `target` |
 | `unit_wait`, `unit_defend` | |
 | `hero_cast` | `spell`, `hex` (omitted for spells without a target) |
+| `unit_cast` | `spell`, `hex`: the active unit casts its own spell, e.g. an Archangel's resurrection |
 | `retreat`, `surrender` | |
 | `end_tactics` | during the tactics phase, after any `unit_move` with a `unit` field |
 
-`battle.options` lists what the active unit can do: reachable hexes, every attackable enemy with each hex it can strike from and the engine's damage and retaliation estimate, shootable targets, castable spells with their valid targets and the units each target affects, and whether retreat or surrender is possible. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
+`battle.options` lists what the active unit can do: `move` (reachable hexes), `attack` (every attackable enemy with each hex it can strike from and the engine's damage and retaliation estimate), `shoot`, `cast` (the unit's own spells), `heroCast` (the hero's spells with cost, damage, valid targets and the units each target affects), and whether retreat or surrender is possible.
+
+Each `move` hex and attack `from` hex carries `danger` when enemies can hit the unit there next round: `by` (unit ids), `damage` (the engine's summed min/max) and `dies` (`no`, `possibly`, `surely`); `stayDanger` is the same for staying put. Every enemy that can act lists the hexes it `threatens` next round, or `everything (shooter)`. Hexes are VCMI's own numbering: `y * 17 + x`, columns 0 and 16 are off the field.
 
 A hero cast does not use the unit's turn; the same unit comes up again.
 
@@ -154,7 +162,7 @@ Every event has `seq`, `type` and `day`.
 | `hill_fort`, `shipyard`, `thieves_guild` | a hero is at one of these; use `upgrade` or `build_boat` |
 | `enemy_hero_moved` | a visible enemy hero moved |
 | `question` | a question was asked |
-| `battle_start`, `battle_turn`, `battle_log`, `battle_end` | `battle_log` carries the game's own combat log lines; `battle_end` has the result, both sides' losses and experience |
+| `battle_start`, `battle_turn`, `battle_log`, `battle_end` | `battle_log` carries the game's own combat log lines; `battle_end` has the result, both sides' losses and experience; the `battle_result` question follows |
 | `game_over` | |
 
 ### Refusals
@@ -165,7 +173,6 @@ The server acknowledges a refused request as applied and explains only in a syst
 
 - Teleporters are not a question. A `move` to a tile beyond an explored exit goes through that exit, as a path through the teleporter does for a player; a `move` that ends on the teleporter takes a random exit.
 - The Altar of Sacrifice window is not modelled.
-- Info windows are recorded and not shown; the non-blocking info-bar messages still are.
 - One agent per process: in a hotseat game the other human seats stay with the GUI.
 
 ## Building

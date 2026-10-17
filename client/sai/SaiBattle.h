@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "../../lib/battle/BattleHex.h"
 #include "../../lib/battle/BattleSide.h"
 #include "../../lib/callback/CBattleGameInterface.h"
 #include "../../lib/constants/EntityIdentifiers.h"
@@ -31,8 +32,18 @@ class BattleAgent : public CBattleGameInterface
 	std::optional<uint32_t> awaitedUnit;
 	bool tacticsPhase = false;
 
+	struct EnemyReach
+	{
+		const CStack * unit;
+		std::set<BattleHex> threatens;
+		bool shooter;
+	};
+
 	JsonNode castOptions() const;
+	JsonNode creatureCastOptions(const CStack * unit) const;
 	JsonNode unitOptions(const CStack * unit) const;
+	std::vector<EnemyReach> enemyReach() const;
+	JsonNode exposure(const CStack * unit, const BattleHex & at, const std::vector<EnemyReach> & enemies) const;
 	void act(const BattleAction & action, bool spell);
 
 public:

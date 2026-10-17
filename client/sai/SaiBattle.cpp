@@ -99,6 +99,67 @@ JsonNode UnitInfo(const CStack * unit, BattleSide mySide)
 	return node;
 }
 
+std::vector<const CSpell *> CreatureSpells(const CStack * unit)
+{
+	// Random casters (faerie dragons) roll their spell on the server, so only fixed spells are offered.
+	auto spells = std::vector<const CSpell *>();
+	for(const auto & bonus : *unit->getBonusesOfType(BonusType::SPELLCASTER))
+		if(!bonus->parameters && bonus->subtype.as<SpellID>().hasValue())
+			spells.push_back(bonus->subtype.as<SpellID>().toSpell());
+	return spells;
+}
+
+JsonNode CastOption(const CPlayerBattleCallback & battle, const spells::Caster * caster, spells::Mode mode, const CSpell * spell)
+{
+	auto probe = spells::BattleCast(&battle, caster, mode, spell);
+	auto mechanics = spell->battleMechanics(&probe);
+	auto aims = mechanics->getTargetTypes();
+	if(aims.size() != 1)
+		return JsonNode();
+
+	auto entry = JsonNode();
+	entry["spell"] = JsonNode(spell->getJsonKey());
+	entry["name"] = JsonNode(spell->getNameTranslated());
+	entry["level"] = Num(spell->getLevel());
+
+	if(aims.front() == spells::AimType::NOTHING)
+	{
+		entry["aim"] = JsonNode("none");
+		return entry;
+	}
+	if(aims.front() != spells::AimType::CREATURE && aims.front() != spells::AimType::LOCATION)
+		return JsonNode();
+
+	entry["aim"] = JsonNode(aims.front() == spells::AimType::CREATURE ? "unit" : "hex");
+	auto candidates = std::set<BattleHex>();
+	// Dead stacks count too: resurrection targets them.
+	for(const auto * unit : battle.battleGetUnitsIf([](const battle::Unit *) { return true; }))
+	{
+		candidates.insert(unit->getPosition());
+		if(aims.front() == spells::AimType::LOCATION)
+			for(const auto & hex : unit->getSurroundingHexes())
+				candidates.insert(hex);
+	}
+	for(const auto & hex : candidates)
+	{
+		if(!hex.isValid())
+			continue;
+		auto problem = spells::detail::ProblemImpl();
+		auto target = spells::Target{spells::Destination(hex)};
+		if(!mechanics->canBeCastAt(target, problem))
+			continue;
+		auto option = Hex(hex);
+		for(const auto * affected : mechanics->getAffectedStacks(target))
+			option["affects"].Vector().push_back(Num(affected->unitId()));
+		if(option["affects"].Vector().empty())
+			continue;
+		entry["targets"].Vector().push_back(option);
+	}
+	if(entry["targets"].Vector().empty())
+		return JsonNode();
+	return entry;
+}
+
 std::string Render(const CPlayerBattleCallback & battle, const std::map<uint32_t, char> & letters)
 {
 	auto grid = std::vector<std::string>(GameConstants::BFIELD_HEIGHT, std::string(GameConstants::BFIELD_WIDTH, '.'));
@@ -226,71 +287,100 @@ JsonNode BattleAgent::castOptions() const
 		const auto * spell = spellID.toSpell();
 		if(!spell->isCombat() || !spell->canBeCast(battle.get(), spells::Mode::HERO, hero))
 			continue;
-
-		auto probe = spells::BattleCast(battle.get(), hero, spells::Mode::HERO, spell);
-		auto mechanics = spell->battleMechanics(&probe);
-		auto aims = mechanics->getTargetTypes();
-
-		auto entry = JsonNode();
-		entry["spell"] = JsonNode(spell->getJsonKey());
-		entry["name"] = JsonNode(spell->getNameTranslated());
-		entry["level"] = Num(spell->getLevel());
+		auto entry = CastOption(*battle, hero, spells::Mode::HERO, spell);
+		if(entry.isNull())
+			continue;
 		entry["cost"] = Num(battle->battleGetSpellCost(spell, hero));
 		entry["description"] = JsonNode(spell->getDescriptionTranslated(hero->getSpellSchoolLevel(spell)));
 		if(spell->isDamage())
 			entry["damage"] = Num(spell->calculateDamage(hero));
-
-		if(aims.size() != 1)
-			continue;
-
-		if(aims.front() == spells::AimType::NOTHING)
-		{
-			entry["aim"] = JsonNode("none");
-		}
-		else if(aims.front() == spells::AimType::CREATURE || aims.front() == spells::AimType::LOCATION)
-		{
-			entry["aim"] = JsonNode(aims.front() == spells::AimType::CREATURE ? "unit" : "hex");
-			auto candidates = std::set<BattleHex>();
-			for(const auto * unit : battle->battleGetAllUnits(false))
-			{
-				candidates.insert(unit->getPosition());
-				if(aims.front() == spells::AimType::LOCATION)
-					for(const auto & hex : unit->getSurroundingHexes())
-						candidates.insert(hex);
-			}
-			for(const auto & hex : candidates)
-			{
-				auto problem = spells::detail::ProblemImpl();
-				auto target = spells::Target{spells::Destination(hex)};
-				if(!mechanics->canBeCastAt(target, problem))
-					continue;
-				auto option = Hex(hex);
-				for(const auto * affected : mechanics->getAffectedStacks(target))
-					option["affects"].Vector().push_back(Num(affected->unitId()));
-				if(option["affects"].Vector().empty())
-					continue;
-				entry["targets"].Vector().push_back(option);
-			}
-			if(entry["targets"].Vector().empty())
-				continue;
-		}
-		else
-		{
-			continue;
-		}
 		node.Vector().push_back(entry);
 	}
+	return node;
+}
+
+JsonNode BattleAgent::creatureCastOptions(const CStack * unit) const
+{
+	auto battle = cb->getBattle(battleID);
+	auto node = JsonNode();
+	node.setType(JsonNode::JsonType::DATA_VECTOR);
+	if(!unit->canCast())
+		return node;
+
+	for(const auto * spell : CreatureSpells(unit))
+	{
+		auto entry = CastOption(*battle, unit, spells::Mode::CREATURE_ACTIVE, spell);
+		if(entry.isNull())
+			continue;
+		entry["description"] = JsonNode(spell->getDescriptionTranslated(unit->getSpellSchoolLevel(spell)));
+		node.Vector().push_back(entry);
+	}
+	return node;
+}
+
+std::vector<BattleAgent::EnemyReach> BattleAgent::enemyReach() const
+{
+	auto battle = cb->getBattle(battleID);
+	auto reach = std::vector<EnemyReach>();
+	for(const auto * enemy : battle->battleGetStacks(CPlayerBattleCallback::ONLY_ENEMY))
+	{
+		// Blinded, paralyzed and petrified units skip their turn.
+		if(enemy->hasBonusOfType(BonusType::NOT_ACTIVE) || !enemy->canMove())
+			continue;
+		auto entry = EnemyReach{enemy, {}, battle->battleCanShoot(enemy)};
+		auto positions = battle->battleGetAvailableHexes(enemy, false);
+		positions.insert(enemy->getPosition());
+		for(const auto & pos : positions)
+			for(const auto & hex : enemy->getSurroundingHexes(pos))
+				entry.threatens.insert(hex);
+		reach.push_back(std::move(entry));
+	}
+	return reach;
+}
+
+JsonNode BattleAgent::exposure(const CStack * unit, const BattleHex & at, const std::vector<EnemyReach> & enemies) const
+{
+	auto battle = cb->getBattle(battleID);
+	auto occupied = battle::Unit::getHexes(at, unit->doubleWide(), unit->unitSide());
+	auto damage = DamageRange();
+	auto node = JsonNode();
+	for(const auto & enemy : enemies)
+	{
+		auto reaches = enemy.shooter || std::any_of(occupied.begin(), occupied.end(), [&](const BattleHex & hex) { return enemy.threatens.count(hex) > 0; });
+		if(!reaches)
+			continue;
+		auto estimate = battle->battleEstimateDamage(enemy.unit, unit, enemy.unit->getPosition());
+		damage.min += estimate.damage.min;
+		damage.max += estimate.damage.max;
+		node["by"].Vector().push_back(Num(enemy.unit->unitId()));
+	}
+	if(node["by"].isNull())
+		return JsonNode();
+	node["damage"] = Range(damage);
+	node["dies"] = JsonNode(damage.min >= unit->getAvailableHealth() ? "surely" : damage.max >= unit->getAvailableHealth() ? "possibly" : "no");
 	return node;
 }
 
 JsonNode BattleAgent::unitOptions(const CStack * unit) const
 {
 	auto battle = cb->getBattle(battleID);
+	auto enemies = enemyReach();
 	auto node = JsonNode();
 	auto reachable = battle->battleGetAvailableHexes(unit, false);
 
+	node["move"].setType(JsonNode::JsonType::DATA_VECTOR);
 	for(const auto & hex : reachable)
-		node["move"].Vector().push_back(Num(hex.toInt()));
+	{
+		auto option = JsonNode();
+		option["hex"] = Num(hex.toInt());
+		auto danger = exposure(unit, hex, enemies);
+		if(!danger.isNull())
+			option["danger"] = danger;
+		node["move"].Vector().push_back(option);
+	}
+	auto stay = exposure(unit, unit->getPosition(), enemies);
+	if(!stay.isNull())
+		node["stayDanger"] = stay;
 
 	auto positions = std::vector<BattleHex>(reachable.begin(), reachable.end());
 	positions.push_back(unit->getPosition());
@@ -317,6 +407,9 @@ JsonNode BattleAgent::unitOptions(const CStack * unit) const
 				continue;
 			auto option = Hex(from);
 			option["estimate"] = Estimate(*battle, unit, enemy, from);
+			auto danger = exposure(unit, from, enemies);
+			if(!danger.isNull())
+				option["danger"] = danger;
 			entry["from"].Vector().push_back(option);
 		}
 		if(entry["from"].Vector().empty())
@@ -326,6 +419,7 @@ JsonNode BattleAgent::unitOptions(const CStack * unit) const
 		node["attack"].Vector().push_back(entry);
 	}
 
+	node["cast"] = creatureCastOptions(unit);
 	node["wait"] = JsonNode(!unit->waited());
 	node["defend"] = JsonNode(true);
 	return node;
@@ -367,9 +461,20 @@ JsonNode BattleAgent::state() const
 	auto letters = std::map<uint32_t, char>();
 	char mine = 'A';
 	char theirs = 'a';
+	auto reach = enemyReach();
 	for(const auto * unit : battle->battleGetStacks(CPlayerBattleCallback::MINE_AND_ENEMY))
 	{
 		auto info = UnitInfo(unit, side);
+		for(const auto & enemy : reach)
+		{
+			if(enemy.unit != unit)
+				continue;
+			if(enemy.shooter)
+				info["threatens"] = JsonNode("everything (shooter)");
+			else
+				for(const auto & hex : enemy.threatens)
+					info["threatens"].Vector().push_back(Num(hex.toInt()));
+		}
 		auto letter = unit->unitSide() == side ? mine++ : theirs++;
 		info["letter"] = JsonNode(std::string(1, letter));
 		letters[unit->unitId()] = letter;
@@ -397,7 +502,7 @@ JsonNode BattleAgent::state() const
 		{
 			node["active"] = Num(active->unitId());
 			node["options"] = unitOptions(active);
-			node["options"]["cast"] = castOptions();
+			node["options"]["heroCast"] = castOptions();
 			node["options"]["retreat"] = JsonNode(battle->battleCanFlee());
 			auto surrender = battle->battleGetSurrenderCost();
 			node["options"]["surrender"] = JsonNode(surrender >= 0);
@@ -527,6 +632,27 @@ JsonNode BattleAgent::command(const std::string & type, const JsonNode & cmd)
 			throw std::invalid_argument("the unit cannot reach that hex this turn");
 		act(BattleAction::makeMeleeAttack(unit, target, from), false);
 		return JsonNode("attacking");
+	}
+	if(type == "unit_cast")
+	{
+		const auto * spell = SpellID(SpellID::decode(cmd["spell"].String())).toSpell();
+		auto spells = CreatureSpells(unit);
+		if(spell == nullptr || !unit->canCast() || !vstd::contains(spells, spell))
+			throw std::invalid_argument("this unit cannot cast that spell now");
+		auto probe = spells::BattleCast(battle.get(), unit, spells::Mode::CREATURE_ACTIVE, spell);
+		auto mechanics = spell->battleMechanics(&probe);
+		auto target = spells::Target();
+		if(!cmd["hex"].isNull())
+			target.push_back(spells::Destination(BattleHex(static_cast<si16>(cmd["hex"].Integer()))));
+		auto problem = spells::detail::ProblemImpl();
+		if(!mechanics->canBeCastAt(target, problem))
+		{
+			auto texts = std::vector<std::string>();
+			problem.getAll(texts);
+			throw std::invalid_argument("the spell cannot be cast there: " + (texts.empty() ? std::string("invalid target") : texts.front()));
+		}
+		act(BattleAction::makeCreatureSpellcast(unit, target, spell->getId()), false);
+		return JsonNode("cast " + spell->getNameTranslated());
 	}
 	if(type == "hero_cast")
 	{

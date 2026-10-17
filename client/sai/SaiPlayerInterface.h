@@ -30,7 +30,7 @@ class SaiPlayerInterface : public CPlayerInterface
 	bool battleEngaged = false;
 
 	void engageBattle();
-	void dismissBattleResult();
+	bool replayAllowed(const BattleID & battleID, QuestionID questionID) const;
 
 public:
 	explicit SaiPlayerInterface(PlayerColor player);
